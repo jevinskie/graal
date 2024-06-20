@@ -25,6 +25,6 @@ RUN git clone https://github.com/pyenv/pyenv.git ${PYENV_ROOT} \
     && pyenv global 3.8.0 \
     && git clone https://github.com/graalvm/mx.git ${MX_PATH} \
     && cd /data \
-    && mx --java-home= fetch-jdk --jdk-id labsjdk-ce-11 --to jdk-dl --alias ${JAVA_HOME}
+    && mx --java-home= fetch-jdk --jdk-id labsjdk-ce-21-debug --to jdk-dl --alias ${JAVA_HOME}
 
 CMD mx --version

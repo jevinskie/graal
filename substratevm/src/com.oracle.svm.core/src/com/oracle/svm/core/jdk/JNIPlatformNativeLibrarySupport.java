@@ -36,19 +36,25 @@ import org.graalvm.word.PointerBase;
 
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.TargetClass;
+import com.oracle.svm.core.nodes.BreakpointNode;
+import com.oracle.svm.core.log.Log;
 
 public abstract class JNIPlatformNativeLibrarySupport extends PlatformNativeLibrarySupport {
 
     @SuppressWarnings("restricted")
     @Platforms(InternalPlatform.PLATFORM_JNI.class)
     protected void loadJavaLibrary() {
+        final Log trace1 = Log.noopLog().string("[JNIPlatformNativeLibrarySupport.loadJavaLibrary: before System.loadLibrary(\"java\");").newline().flush();
         System.loadLibrary("java");
+        final Log trace2 = Log.noopLog().string("[JNIPlatformNativeLibrarySupport.loadJavaLibrary: after System.loadLibrary(\"java\");").newline().flush();
 
         Target_java_io_FileDescriptor_JNI.initIDs();
         Target_java_io_FileInputStream_JNI.initIDs();
         Target_java_io_FileOutputStream_JNI.initIDs();
 
+        final Log trace3 = Log.noopLog().string("[JNIPlatformNativeLibrarySupport.loadJavaLibrary: before initializeEncoding();").newline().flush();
         initializeEncoding();
+        final Log trace4 = Log.noopLog().string("[JNIPlatformNativeLibrarySupport.loadJavaLibrary: after initializeEncoding();").newline().flush();
     }
 
     /**
@@ -75,10 +81,13 @@ public abstract class JNIPlatformNativeLibrarySupport extends PlatformNativeLibr
      * (more importantly) also do not look at environment variables to determine the encoding.
      */
     private static void initializeEncoding() {
+        final Log trace = Log.noopLog().string("[JNIPlatformNativeLibrarySupport.initializeEncoding:").newline().flush();
+
         /*
          * The method `InitializeEncoding` is an exported JNI function and we can call it directly.
          */
         try (CTypeConversion.CCharPointerHolder name = CTypeConversion.toCString(System.getProperty("sun.jnu.encoding"))) {
+            BreakpointNode.breakpoint();
             nativeInitializeEncoding(CurrentIsolate.getCurrentThread(), name.get());
         }
     }

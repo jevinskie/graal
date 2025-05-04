@@ -40,6 +40,12 @@ public class JNIRegistrationAWTSupport extends JNIRegistrationUtil implements In
     @Override
     public void afterAnalysis(AfterAnalysisAccess access) {
         JNIRegistrationSupport jniRegistrationSupport = JNIRegistrationSupport.singleton();
+        if (Boolean.getBoolean("debug.jni.registration")) {
+            String[] libArray = {"awt", "awt_foo", "awt_headless", "awt_xawt", "awt_lwawt"};
+            for (String lib : libArray) {
+                System.out.println("JNIRegistrationAWTSupport: isRegisteredLibrary(\"" + lib + "\") = " + jniRegistrationSupport.isRegisteredLibrary(lib));
+            }
+        }
         if (jniRegistrationSupport.isRegisteredLibrary("awt")) {
             jniRegistrationSupport.addJvmShimExports(
                             "jio_snprintf");
@@ -80,9 +86,13 @@ public class JNIRegistrationAWTSupport extends JNIRegistrationUtil implements In
                 jniRegistrationSupport.addJavaShimExports(
                                 "JNU_GetStringPlatformChars",
                                 "JNU_ReleaseStringPlatformChars");
-                /* Since `awt` loads either `awt_headless` or `awt_xawt`, we register them both. */
-                jniRegistrationSupport.registerLibrary("awt_headless");
-                jniRegistrationSupport.registerLibrary("awt_xawt");
+                if (!isDarwin()) {
+                    /* Since `awt` loads either `awt_headless` or `awt_xawt`, we register them both. */
+                    jniRegistrationSupport.registerLibrary("awt_headless");
+                    jniRegistrationSupport.registerLibrary("awt_xawt");
+                } else {
+                    jniRegistrationSupport.registerLibrary("awt_lwawt");
+                }
             }
         }
         if (jniRegistrationSupport.isRegisteredLibrary("javaaccessbridge")) {
@@ -100,6 +110,12 @@ public class JNIRegistrationAWTSupport extends JNIRegistrationUtil implements In
             } else {
                 jniRegistrationSupport.addJvmShimExports(
                                 "jio_snprintf");
+            }
+        }
+        if (Boolean.getBoolean("debug.jni.registration")) {
+            String[] libArray = {"awt", "awt_foo", "awt_headless", "awt_xawt", "awt_lwawt"};
+            for (String lib : libArray) {
+                System.out.println("JNIRegistrationAWTSupport-end: isRegisteredLibrary(\"" + lib + "\") = " + jniRegistrationSupport.isRegisteredLibrary(lib));
             }
         }
     }

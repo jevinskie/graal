@@ -400,7 +400,7 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
             }
             if (Boolean.getBoolean("debug.jni.shims")) {
                 for (String export : shimExports.get(shimName)) {
-                    System.out.println("makeShimLibrary shim lib: '" + shimName + "' export: '" + export + "'");
+                    System.out.println("makeShimLibrary shim lib: " + shimName + " export: " + export);
                 }
                 System.out.println("makeShimLibrary linker command: " + String.join(" ", linkerCommand));
             }

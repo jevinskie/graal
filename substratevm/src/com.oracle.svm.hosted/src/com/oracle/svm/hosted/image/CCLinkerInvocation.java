@@ -419,7 +419,14 @@ public abstract class CCLinkerInvocation implements LinkerInvocation {
              */
             try {
                 Path exportedSymbolsPath = nativeLibs.tempDirectory.resolve("exported_symbols.list");
-                Files.write(exportedSymbolsPath, getImageSymbols(true));
+                // List<String> globalSymbols = Stream.concat(getImageSymbols(true).stream(), JNIRegistrationSupport.getShimLibrarySymbols()).collect(Collectors.toSet()).stream().toList();
+                // List<String> jniSymbols = JNIRegistrationSupport.getShimLibrarySymbols();
+                List<String> jniSymbols = new ArrayList<>();
+                List<String> globalSymbols = Stream.concat(getImageSymbols(true).stream(), jniSymbols.stream()).collect(Collectors.toSet()).stream().toList();
+                if (Boolean.getBoolean("debug.jni.shims")) {
+                    System.out.println("DarwinCCLinkerInvocation.setLinkerFlags globalSymbols: " + String.join(", ", globalSymbols));
+                }
+                Files.write(exportedSymbolsPath, globalSymbols);
                 additionalPreOptions.add("-Wl,-exported_symbols_list");
                 additionalPreOptions.add("-Wl," + exportedSymbolsPath.toAbsolutePath());
             } catch (IOException e) {

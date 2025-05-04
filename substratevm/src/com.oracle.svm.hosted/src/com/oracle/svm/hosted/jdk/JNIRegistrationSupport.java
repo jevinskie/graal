@@ -206,7 +206,7 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
 
     @Override
     public void beforeImageWrite(BeforeImageWriteAccess access) {
-        if (SubstrateOptions.StaticExecutable.getValue() || isDarwin()) {
+        if (SubstrateOptions.StaticExecutable.getValue()) {
             return; /* Not supported. */
         }
 
@@ -215,15 +215,17 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
             addJvmShimExports("JNI_CreateJavaVM", "JNI_GetCreatedJavaVMs", "JNI_GetDefaultJavaVMInitArgs");
         }
 
-        ((BeforeImageWriteAccessImpl) access).registerLinkerInvocationTransformer(linkerInvocation -> {
-            /* Make sure the native image contains all symbols necessary for shim libraries. */
-            getShimExports().map(isWindows() ? "/export:"::concat : "-Wl,-u,"::concat)
-                            .forEach(linkerInvocation::addNativeLinkerOption);
-            if (Boolean.getBoolean("debug.jni.shims")) {
-                System.out.println("beforeImageWrite registerLinkerInvocationTransformer linker command: " + String.join(" ", linkerInvocation.getCommand()));
-            }
-            return linkerInvocation;
-        });
+        if (!isDarwin()) {
+            ((BeforeImageWriteAccessImpl) access).registerLinkerInvocationTransformer(linkerInvocation -> {
+                /* Make sure the native image contains all symbols necessary for shim libraries. */
+                getShimExports().map(isWindows() ? "/export:"::concat : "-Wl,-u,"::concat)
+                                .forEach(linkerInvocation::addNativeLinkerOption);
+                if (Boolean.getBoolean("debug.jni.shims")) {
+                    System.out.println("beforeImageWrite registerLinkerInvocationTransformer linker command: " + String.join(" ", linkerInvocation.getCommand()));
+                }
+                return linkerInvocation;
+            });
+        }
 
         imageName = ((BeforeImageWriteAccessImpl) access).getImageName();
     }
@@ -364,8 +366,33 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
                                     "-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN"));
                 }
             } else {
+                Path mainImageTBDPath = accessImpl.getTempDirectory().resolve("graal_main_image.tbd");
+                List<String> tbdContents = List.of(
+                    "--- !tapi-tbd",
+                    "tbd-version: 4",
+                    "targets: [i386-macos, x86_64-macos, x86_64-maccatalyst, arm64-macos, arm64-maccatalyst, arm64e-macos, arm64e-maccatalyst]",
+                    "install-name: '" + imageFile + "'",
+                    "...",
+                    ""
+                );
+                try {
+                    Files.write(mainImageTBDPath, tbdContents);
+                } catch (IOException e) {
+                    VMError.shouldNotReachHere(e);
+                }
+                if (Boolean.getBoolean("debug.jni.shims")) {
+                    System.out.println("makeShimLibrary mainImageTBDPath: " + mainImageTBDPath);
+                    System.out.println("makeShimLibrary tbdContents:\n" + String.join("\n", tbdContents));
+                }
+                Path emptyCPath = accessImpl.getTempDirectory().resolve("empty_c_dummy.c");
+                try {
+                    Files.write(emptyCPath, List.of(""));
+                } catch (IOException e) {
+                    VMError.shouldNotReachHere(e);
+                }
+
                 linkerCommand = ImageSingletons.lookup(CCompilerInvoker.class)
-                                .createCompilerCommand(List.of("-shared", "-x", "c"), shimLibrary, Path.of("/dev/null"));
+                                .createCompilerCommand(List.of("-shared", "-reexport_library", mainImageTBDPath.toString()), shimLibrary, emptyCPath);
                 if (!accessImpl.getImageKind().isExecutable) {
                     // linkerCommand.addAll(List.of("-Wl,-no-as-needed", "-L" + image.getParent(), "-l:" + image.getFileName(),
                     //                 "-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN"));

@@ -34,7 +34,7 @@ import com.oracle.svm.hosted.FeatureImpl.BeforeImageWriteAccessImpl;
 
 import jdk.graal.compiler.serviceprovider.JavaVersionUtil;
 
-@Platforms({Platform.WINDOWS.class, Platform.LINUX.class})
+@Platforms({Platform.WINDOWS.class, Platform.LINUX.class, Platform.MACOS.class})
 @AutomaticallyRegisteredFeature
 public class JNIRegistrationAWTSupport extends JNIRegistrationUtil implements InternalFeature {
     @Override

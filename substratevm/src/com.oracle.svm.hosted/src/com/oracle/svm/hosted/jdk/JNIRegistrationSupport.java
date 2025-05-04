@@ -219,6 +219,9 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
             /* Make sure the native image contains all symbols necessary for shim libraries. */
             getShimExports().map(isWindows() ? "/export:"::concat : "-Wl,-u,"::concat)
                             .forEach(linkerInvocation::addNativeLinkerOption);
+            if (Boolean.getBoolean("debug.jni.shims")) {
+                System.out.println("beforeImageWrite registerLinkerInvocationTransformer linker command: " + String.join(" ", linkerInvocation.getCommand()));
+            }
             return linkerInvocation;
         });
 
@@ -236,14 +239,19 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
     @Override
     @SuppressWarnings("try")
     public void afterImageWrite(AfterImageWriteAccess access) {
-        if (Boolean.getBoolean("debug.jni.shims")) {
-            System.out.println("afterImageWrite");
-        }
         if (SubstrateOptions.StaticExecutable.getValue()) {
             return; /* Not supported. */
         }
 
         accessImpl = (AfterImageWriteAccessImpl) access;
+
+        if (Boolean.getBoolean("debug.jni.shims")) {
+            System.out.println("afterImageWrite accessImpl.getImagePath: " + accessImpl.getImagePath() + " tmp dir: " + accessImpl.getTempDirectory() + " symbols global: " + String.join(", ", accessImpl.getImageSymbols(true))); // + " symbols all: " + String.join(", ", accessImpl.getImageSymbols(false)));
+        }
+
+        Path imagePath = accessImpl.getImagePath();
+        String imageFile = imagePath.getFileName().toString();
+
         try (Scope s = accessImpl.getDebugContext().scope("JDKLibs")) {
             Path jdkLibDir = JDKLibDirectoryProvider.singleton().getJDKLibDirectory();
             /* Copy JDK libraries needed to run the native image. */
@@ -252,7 +260,7 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
              * JDK libraries can depend on `libjvm` and `libjava`, so to satisfy their dependencies
              * we use shim libraries to re-export the actual functions from the native image itself.
              */
-            makeShimLibraries();
+            makeShimLibraries(imageFile);
         } finally {
             accessImpl = null;
         }
@@ -305,25 +313,29 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
 
     /** Makes shim libraries that are necessary to satisfy dependencies of JDK libraries. */
     @SuppressWarnings("try")
-    private void makeShimLibraries() {
+    private void makeShimLibraries(String imageFile) {
         for (String shimName : shimExports.keySet()) {
             if (Boolean.getBoolean("debug.jni.shims")) {
-                System.out.println("makeShimLibraries shim lib: '" + shimName + "'");
+                System.out.println("makeShimLibraries imageFile: " + imageFile + " shim lib: '" + shimName + "'");
             }
             DebugContext debug = accessImpl.getDebugContext();
             try (Scope s = debug.scope(shimName + "Shim")) {
                 if (debug.isLogEnabled(DebugContext.INFO_LEVEL)) {
                     debug.log("exports: %s", String.join(", ", shimExports.get(shimName)));
                 }
-                makeShimLibrary(shimName);
+                makeShimLibrary(shimName, imageFile);
             }
         }
     }
 
     /** Makes a shim library that re-exports functions from the native image. */
     @SuppressWarnings("try")
-    private void makeShimLibrary(String shimName) {
+    private void makeShimLibrary(String shimName, String imageFile) {
         assert ImageSingletons.contains(CCompilerInvoker.class);
+
+        if (Boolean.getBoolean("debug.jni.shims")) {
+            System.out.println("makeShimLibrary shimName: " + shimName + " imageFile: " + imageFile);
+        }
 
         List<String> linkerCommand;
         Path image = accessImpl.getImagePath();

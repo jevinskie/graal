@@ -41,7 +41,7 @@ public class JNIRegistrationAWTSupport extends JNIRegistrationUtil implements In
     public void afterAnalysis(AfterAnalysisAccess access) {
         JNIRegistrationSupport jniRegistrationSupport = JNIRegistrationSupport.singleton();
         if (Boolean.getBoolean("debug.jni.registration")) {
-            String[] libArray = {"awt", "awt_foo", "awt_headless", "awt_xawt", "awt_lwawt"};
+            String[] libArray = {"awt", "awt_foo", "awt_headless", "awt_xawt", "awt_lwawt", "osxapp"};
             for (String lib : libArray) {
                 System.out.println("JNIRegistrationAWTSupport: isRegisteredLibrary(\"" + lib + "\") = " + jniRegistrationSupport.isRegisteredLibrary(lib));
             }
@@ -92,6 +92,7 @@ public class JNIRegistrationAWTSupport extends JNIRegistrationUtil implements In
                     jniRegistrationSupport.registerLibrary("awt_xawt");
                 } else {
                     jniRegistrationSupport.registerLibrary("awt_lwawt");
+                    jniRegistrationSupport.registerLibrary("osxapp");
                 }
             }
         }
@@ -113,7 +114,7 @@ public class JNIRegistrationAWTSupport extends JNIRegistrationUtil implements In
             }
         }
         if (Boolean.getBoolean("debug.jni.registration")) {
-            String[] libArray = {"awt", "awt_foo", "awt_headless", "awt_xawt", "awt_lwawt"};
+            String[] libArray = {"awt", "awt_foo", "awt_headless", "awt_xawt", "awt_lwawt", "osxapp"};
             for (String lib : libArray) {
                 System.out.println("JNIRegistrationAWTSupport-end: isRegisteredLibrary(\"" + lib + "\") = " + jniRegistrationSupport.isRegisteredLibrary(lib));
             }

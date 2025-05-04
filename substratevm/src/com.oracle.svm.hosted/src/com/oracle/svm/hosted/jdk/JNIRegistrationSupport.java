@@ -236,7 +236,10 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
     @Override
     @SuppressWarnings("try")
     public void afterImageWrite(AfterImageWriteAccess access) {
-        if (SubstrateOptions.StaticExecutable.getValue() || isDarwin()) {
+        if (Boolean.getBoolean("debug.jni.shims")) {
+            System.out.println("afterImageWrite");
+        }
+        if (SubstrateOptions.StaticExecutable.getValue()) {
             return; /* Not supported. */
         }
 
@@ -304,6 +307,9 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
     @SuppressWarnings("try")
     private void makeShimLibraries() {
         for (String shimName : shimExports.keySet()) {
+            if (Boolean.getBoolean("debug.jni.shims")) {
+                System.out.println("makeShimLibraries shim lib: '" + shimName + "'");
+            }
             DebugContext debug = accessImpl.getDebugContext();
             try (Scope s = debug.scope(shimName + "Shim")) {
                 if (debug.isLogEnabled(DebugContext.INFO_LEVEL)) {
@@ -333,16 +339,30 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
                 linkerCommand.add("/export:" + export);
             }
         } else {
-            /*
-             * To satisfy the dynamic loader and enable re-export it is enough to have a library
-             * with the expected name. So we just create an empty one ...
-             */
-            linkerCommand = ImageSingletons.lookup(CCompilerInvoker.class)
-                            .createCompilerCommand(List.of("-shared", "-x", "c", "-nostdlib"), shimLibrary, Path.of("/dev/null"));
-            /* ... and add an explicit dependency on the native image if it is a shared library. */
-            if (!accessImpl.getImageKind().isExecutable) {
-                linkerCommand.addAll(List.of("-Wl,-no-as-needed", "-L" + image.getParent(), "-l:" + image.getFileName(),
-                                "-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN"));
+            if (!isDarwin()) {
+                /*
+                * To satisfy the dynamic loader and enable re-export it is enough to have a library
+                * with the expected name. So we just create an empty one ...
+                */
+                linkerCommand = ImageSingletons.lookup(CCompilerInvoker.class)
+                                .createCompilerCommand(List.of("-shared", "-x", "c", "-nostdlib"), shimLibrary, Path.of("/dev/null"));
+                /* ... and add an explicit dependency on the native image if it is a shared library. */
+                if (!accessImpl.getImageKind().isExecutable) {
+                    linkerCommand.addAll(List.of("-Wl,-no-as-needed", "-L" + image.getParent(), "-l:" + image.getFileName(),
+                                    "-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN"));
+                }
+            } else {
+                linkerCommand = ImageSingletons.lookup(CCompilerInvoker.class)
+                                .createCompilerCommand(List.of("-shared", "-x", "c"), shimLibrary, Path.of("/dev/null"));
+                if (!accessImpl.getImageKind().isExecutable) {
+                    // linkerCommand.addAll(List.of("-Wl,-no-as-needed", "-L" + image.getParent(), "-l:" + image.getFileName(),
+                    //                 "-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN"));
+                }
+            }
+            if (Boolean.getBoolean("debug.jni.shims")) {
+                for (String export : shimExports.get(shimName)) {
+                    System.out.println("makeShimLibrary shim lib: '" + shimName + "' export: '" + export + "'");
+                }
             }
         }
 
@@ -351,6 +371,8 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
                         Activation a = debug.activate()) {
             int cmdResult = FileUtils.executeCommand(linkerCommand);
             if (cmdResult != 0) {
+                System.out.println("failed linker command: " + String.join(" ", linkerCommand));
+                debug.log("failed linker command: %s", String.join(" ", linkerCommand));
                 VMError.shouldNotReachHereUnexpectedInput(cmdResult); // ExcludeFromJacocoGeneratedReport
             }
             BuildArtifacts.singleton().add(ArtifactType.JDK_LIBRARY_SHIM, shimLibrary);

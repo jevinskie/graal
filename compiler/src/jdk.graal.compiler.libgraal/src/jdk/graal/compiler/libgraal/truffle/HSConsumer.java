@@ -32,7 +32,7 @@ import jdk.vm.ci.hotspot.HotSpotJVMCIRuntime;
 import org.graalvm.jniutils.HSObject;
 import org.graalvm.jniutils.JNI.JObject;
 import org.graalvm.jniutils.JNIMethodScope;
-import org.graalvm.word.WordFactory;
+import org.graalvm.word.impl.Word;
 
 import java.util.function.Consumer;
 
@@ -55,7 +55,7 @@ final class HSConsumer extends HSObject implements Consumer<OptimizedAssumptionD
         JObject compilable;
         long installedCode;
         if (dependency == null) {
-            compilable = WordFactory.nullPointer();
+            compilable = Word.nullPointer();
             installedCode = 0;
         } else {
             TruffleCompilable ast = dependency.getCompilable();
@@ -64,7 +64,7 @@ final class HSConsumer extends HSObject implements Consumer<OptimizedAssumptionD
                  * Compilable may be null if the compilation was triggered by a libgraal host
                  * compilation.
                  */
-                compilable = WordFactory.nullPointer();
+                compilable = Word.nullPointer();
             } else {
                 compilable = ((HSTruffleCompilable) dependency.getCompilable()).getHandle();
             }

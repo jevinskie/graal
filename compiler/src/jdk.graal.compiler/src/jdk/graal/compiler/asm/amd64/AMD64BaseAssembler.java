@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -52,8 +52,6 @@ import static jdk.vm.ci.amd64.AMD64.rsp;
 
 import java.util.EnumSet;
 
-import org.graalvm.collections.EconomicSet;
-
 import jdk.graal.compiler.asm.Assembler;
 import jdk.graal.compiler.core.common.Stride;
 import jdk.graal.compiler.debug.GraalError;
@@ -71,16 +69,20 @@ import jdk.vm.ci.meta.PlatformKind;
 public abstract class AMD64BaseAssembler extends Assembler<CPUFeature> {
 
     /**
+     * The set of features we consider necessary for "full" AVX-512 support. In general, we want to
+     * emit only EVEX-encoded AVX-512 instructions if all of these features are present. If any of
+     * these features are missing, we prefer emitting VEX-encoded AVX1/AVX2 instructions.
+     */
+    public static final EnumSet<CPUFeature> FULL_AVX512_FEATURES = EnumSet.of(CPUFeature.AVX512F, CPUFeature.AVX512BW, CPUFeature.AVX512VL, CPUFeature.AVX512DQ);
+
+    /**
      * If this check is false, AVX512 support is absent or incomplete, and it makes little sense to
      * try to use AVX512 over SSE/AVX instructions.
      *
      * @param features feature set to check compatibility against
      */
     public static boolean supportsFullAVX512(EnumSet<CPUFeature> features) {
-        return features.contains(CPUFeature.AVX512F) &&
-                        features.contains(CPUFeature.AVX512BW) &&
-                        features.contains(CPUFeature.AVX512VL) &&
-                        features.contains(CPUFeature.AVX512DQ);
+        return features.containsAll(FULL_AVX512_FEATURES);
     }
 
     public boolean supportsFullAVX512() {
@@ -306,35 +308,6 @@ public abstract class AMD64BaseAssembler extends Assembler<CPUFeature> {
 
     public final boolean supports(CPUFeature feature) {
         return getFeatures().contains(feature);
-    }
-
-    public final boolean supports(String feature) {
-        try {
-            return getFeatures().contains(AMD64.CPUFeature.valueOf(feature));
-        } catch (IllegalArgumentException e) {
-            return false;
-        }
-    }
-
-    /**
-     * Mitigates exception throwing by recording unknown CPU feature names.
-     */
-    private final EconomicSet<String> unknownFeatures = EconomicSet.create();
-
-    /**
-     * Determines if the CPU feature denoted by {@code name} is supported. This name based look up
-     * is for features only available in later JVMCI releases.
-     */
-    public final boolean supportsCPUFeature(String name) {
-        if (unknownFeatures.contains(name)) {
-            return false;
-        }
-        try {
-            return supports(CPUFeature.valueOf(name));
-        } catch (IllegalArgumentException e) {
-            unknownFeatures.add(name);
-            return false;
-        }
     }
 
     protected static boolean inRC(RegisterCategory rc, Register r) {
@@ -584,7 +557,9 @@ public abstract class AMD64BaseAssembler extends Assembler<CPUFeature> {
      * There is an SIB byte: In that case, X extends SIB.index and B extends SIB.base.
      */
     protected static int getRXB(Register reg, AMD64Address rm) {
-        assert !isInvalidEncoding(reg);
+        GraalError.guarantee(!isInvalidEncoding(reg), "invalid encoding %s", reg);
+        GraalError.guarantee(rm.getBase() == null || rm.getBase().encoding < 16, "APX register used in %s not yet supported", rm);
+        GraalError.guarantee(rm.getIndex() == null || rm.getIndex().encoding < 16, "APX register used in %s not yet supported", rm);
         int rxb = (reg == null ? 0 : reg.encoding & 0x08) >> 1;
         if (!isInvalidEncoding(rm.getIndex())) {
             rxb |= (rm.getIndex().encoding & 0x08) >> 2;
@@ -696,7 +671,7 @@ public abstract class AMD64BaseAssembler extends Assembler<CPUFeature> {
                             int newDisp = disp / evexDisp8Scale;
                             if (isByte(newDisp)) {
                                 disp = newDisp;
-                                assert isByte(disp) && !overriddenForce4Byte : disp;
+                                assert isByte(disp) : disp;
                             }
                         } else {
                             overriddenForce4Byte = true;
@@ -732,7 +707,7 @@ public abstract class AMD64BaseAssembler extends Assembler<CPUFeature> {
                             int newDisp = disp / evexDisp8Scale;
                             if (isByte(newDisp)) {
                                 disp = newDisp;
-                                assert isByte(disp) && !overriddenForce4Byte : disp;
+                                assert isByte(disp) : disp;
                             }
                         } else {
                             overriddenForce4Byte = true;
@@ -766,7 +741,7 @@ public abstract class AMD64BaseAssembler extends Assembler<CPUFeature> {
                             int newDisp = disp / evexDisp8Scale;
                             if (isByte(newDisp)) {
                                 disp = newDisp;
-                                assert isByte(disp) && !overriddenForce4Byte : disp;
+                                assert isByte(disp) : disp;
                             }
                         } else {
                             overriddenForce4Byte = true;

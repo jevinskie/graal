@@ -24,19 +24,22 @@
  */
 package com.oracle.svm.core.genscavenge;
 
+import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.core.SubstrateGCOptions;
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.code.CodeInfo;
 import com.oracle.svm.core.code.CodeInfoAccess;
 import com.oracle.svm.core.code.RuntimeCodeCache.CodeInfoVisitor;
 import com.oracle.svm.core.code.RuntimeCodeInfoAccess;
 import com.oracle.svm.core.code.UntetheredCodeInfoAccess;
-import com.oracle.svm.core.heap.ObjectReferenceVisitor;
+import com.oracle.svm.core.genscavenge.RuntimeCodeCacheReachabilityAnalyzer.UnreachableObjectsException;
 import com.oracle.svm.core.util.DuplicatedInNativeCode;
 
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.Word;
 
 /**
  * References from the runtime compiled code to the Java heap must be considered either strong or
@@ -49,19 +52,20 @@ import jdk.graal.compiler.word.Word;
  */
 final class RuntimeCodeCacheWalker implements CodeInfoVisitor {
     private final RuntimeCodeCacheReachabilityAnalyzer checkForUnreachableObjectsVisitor;
-    private final ObjectReferenceVisitor greyToBlackObjectVisitor;
+    private final GreyToBlackObjRefVisitor greyToBlackObjectVisitor;
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    RuntimeCodeCacheWalker(ObjectReferenceVisitor greyToBlackObjectVisitor) {
+    RuntimeCodeCacheWalker(GreyToBlackObjRefVisitor greyToBlackObjectVisitor) {
         this.checkForUnreachableObjectsVisitor = new RuntimeCodeCacheReachabilityAnalyzer();
         this.greyToBlackObjectVisitor = greyToBlackObjectVisitor;
     }
 
     @Override
     @DuplicatedInNativeCode
-    public boolean visitCode(CodeInfo codeInfo) {
+    @Uninterruptible(reason = "Avoid unnecessary safepoint checks in GC for performance.")
+    public void visitCode(CodeInfo codeInfo) {
         if (RuntimeCodeInfoAccess.areAllObjectsOnImageHeap(codeInfo)) {
-            return true;
+            return;
         }
 
         /*
@@ -84,7 +88,7 @@ final class RuntimeCodeCacheWalker implements CodeInfoVisitor {
                  */
                 RuntimeCodeInfoAccess.walkObjectFields(codeInfo, greyToBlackObjectVisitor);
                 CodeInfoAccess.setState(codeInfo, CodeInfo.STATE_PENDING_FREE);
-                return true;
+                return;
             }
 
             /*
@@ -98,7 +102,7 @@ final class RuntimeCodeCacheWalker implements CodeInfoVisitor {
             if (state == CodeInfo.STATE_NON_ENTRANT || invalidateCodeThatReferencesUnreachableObjects && state == CodeInfo.STATE_CODE_CONSTANTS_LIVE && hasWeakReferenceToUnreachableObject(codeInfo)) {
                 RuntimeCodeInfoAccess.walkObjectFields(codeInfo, greyToBlackObjectVisitor);
                 CodeInfoAccess.setState(codeInfo, CodeInfo.STATE_PENDING_REMOVAL_FROM_CODE_CACHE);
-                return true;
+                return;
             }
         }
 
@@ -112,16 +116,20 @@ final class RuntimeCodeCacheWalker implements CodeInfoVisitor {
          */
         RuntimeCodeInfoAccess.walkStrongReferences(codeInfo, greyToBlackObjectVisitor);
         RuntimeCodeInfoAccess.walkWeakReferences(codeInfo, greyToBlackObjectVisitor);
-        return true;
     }
 
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private static boolean isReachable(Object possiblyForwardedObject) {
         return RuntimeCodeCacheReachabilityAnalyzer.isReachable(Word.objectToUntrackedPointer(possiblyForwardedObject));
     }
 
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private boolean hasWeakReferenceToUnreachableObject(CodeInfo codeInfo) {
-        checkForUnreachableObjectsVisitor.initialize();
-        RuntimeCodeInfoAccess.walkWeakReferences(codeInfo, checkForUnreachableObjectsVisitor);
-        return checkForUnreachableObjectsVisitor.hasUnreachableObjects();
+        try {
+            RuntimeCodeInfoAccess.walkWeakReferences(codeInfo, checkForUnreachableObjectsVisitor);
+            return false;
+        } catch (UnreachableObjectsException e) {
+            return true;
+        }
     }
 }

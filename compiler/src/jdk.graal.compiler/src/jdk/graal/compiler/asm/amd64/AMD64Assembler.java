@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -87,6 +87,16 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
     private final boolean useBranchesWithin32ByteBoundary;
     private boolean optimizeLongJumps;
+    /**
+     * The encoding to use when emitting AVX instructions. Not used if the target doesn't support
+     * any version of AVX.
+     */
+    protected AMD64SIMDInstructionEncoding avxEncoding;
+    /**
+     * Saves the previous encoding if we temporarily override {@link #avxEncoding}. See
+     * {@link #setTemporaryAvxEncoding}. The last element is the stack top.
+     */
+    protected ArrayList<AMD64SIMDInstructionEncoding> avxEncodingStack;
 
     /**
      * Constructs an assembler for the AMD64 architecture.
@@ -95,6 +105,8 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         super(target);
         useBranchesWithin32ByteBoundary = false;
         optimizeLongJumps = GraalOptions.OptimizeLongJumps.getDefaultValue();
+        avxEncoding = avxEncoding((AMD64) target.arch);
+        avxEncodingStack = new ArrayList<>(1);
     }
 
     public AMD64Assembler(TargetDescription target, OptionValues optionValues, boolean hasIntelJccErratum) {
@@ -105,6 +117,67 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
             useBranchesWithin32ByteBoundary = !GraalOptions.ReduceCodeSize.getValue(optionValues) && hasIntelJccErratum;
         }
         optimizeLongJumps = GraalOptions.OptimizeLongJumps.getValue(optionValues);
+        avxEncoding = avxEncoding((AMD64) target.arch);
+        avxEncodingStack = new ArrayList<>(1);
+    }
+
+    private static AMD64SIMDInstructionEncoding avxEncoding(AMD64 amd64) {
+        if (amd64.getFeatures().contains(CPUFeature.AVX)) {
+            return AMD64SIMDInstructionEncoding.forFeatures(amd64.getFeatures());
+        }
+        return null;
+    }
+
+    public AMD64SIMDInstructionEncoding getAvxEncoding() {
+        return avxEncoding;
+    }
+
+    /**
+     * Change this assembler's preferred SIMD encoding to {@code newEncoding}. This can be useful
+     * for complex operations that want to emit VEX-encoded instructions in an environment where we
+     * would usually use EVEX-encoded instructions. Use with caution since not all registers can be
+     * addressed with VEX-encoded instructions. This method returns the previous encoding. Once the
+     * relevant instructions have been emitted, {@link #resetAvxEncoding} must be called to restore
+     * the previous encoding. Regions with temporary encodings may be nested but must observe proper
+     * nesting.
+     */
+    public AMD64SIMDInstructionEncoding setTemporaryAvxEncoding(AMD64SIMDInstructionEncoding newEncoding) {
+        AMD64SIMDInstructionEncoding oldEncoding = avxEncoding;
+        avxEncoding = newEncoding;
+        avxEncodingStack.addLast(oldEncoding);
+        return oldEncoding;
+    }
+
+    /**
+     * Reset the assembler's preferred SIMD encoding after modifying it with
+     * {@link #setTemporaryAvxEncoding}. The {@code oldEncoding} must be the value returned by that
+     * previous call.
+     */
+    public void resetAvxEncoding(AMD64SIMDInstructionEncoding oldEncoding) {
+        if (oldEncoding == null && avxEncodingStack.isEmpty()) {
+            // non-AVX case
+            avxEncoding = null;
+            return;
+        }
+        GraalError.guarantee(!avxEncodingStack.isEmpty() && avxEncodingStack.getLast() == oldEncoding,
+                        "can only reset encoding to what it was before the corresponding setTemporaryAvxEncoding call; expected %s, got %s", avxEncodingStack.getLast(), oldEncoding);
+        avxEncodingStack.removeLast();
+        avxEncoding = oldEncoding;
+    }
+
+    @Override
+    public void addFeatures(EnumSet<CPUFeature> newFeatures) {
+        super.addFeatures(newFeatures);
+        AMD64SIMDInstructionEncoding newEncoding = getFeatures().contains(CPUFeature.AVX) ? AMD64SIMDInstructionEncoding.forFeatures(getFeatures()) : null;
+        setTemporaryAvxEncoding(newEncoding);
+    }
+
+    @Override
+    public void removeFeatures() {
+        super.removeFeatures();
+        EnumSet<CPUFeature> previousFeatures = getFeatures();
+        AMD64SIMDInstructionEncoding previousEncoding = previousFeatures.contains(CPUFeature.AVX) ? AMD64SIMDInstructionEncoding.forFeatures(previousFeatures) : null;
+        resetAvxEncoding(previousEncoding);
     }
 
     /**
@@ -232,8 +305,10 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         }
 
         protected boolean checkOperands(AMD64Op op, OperandSize size, Register resultReg, Register inputReg) {
-            assert resultReg == null || resultCategory.equals(resultReg.getRegisterCategory()) : "invalid result register " + resultReg + " used in " + op;
-            assert inputReg == null || inputCategory.equals(inputReg.getRegisterCategory()) : "invalid input register " + inputReg + " used in " + op;
+            GraalError.guarantee(resultReg == null || resultCategory.equals(resultReg.getRegisterCategory()), "invalid result register %s used in %s ", resultReg, op);
+            GraalError.guarantee(inputReg == null || inputCategory.equals(inputReg.getRegisterCategory()), "invalid input register %s used in %s ", inputReg, op);
+            GraalError.guarantee(resultReg == null || !inRC(CPU, resultReg) || (resultReg.encoding < 16), "APX register %s used in %s is not yet supported", resultReg, op);
+            GraalError.guarantee(inputReg == null || !inRC(CPU, inputReg) || (inputReg.encoding < 16), "APX register %s used in %s is not yet supported", inputReg, op);
 
             for (OperandSize s : allowedSizes) {
                 if (size == s) {
@@ -594,6 +669,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         // @formatter:off
         public static final AMD64MIOp BT    = new AMD64MIOp("BT",   true,  P_0F, 0xBA, 4, true, OpAssertion.WordOrLargerAssertion);
         public static final AMD64MIOp BTR   = new AMD64MIOp("BTR",  true,  P_0F, 0xBA, 6, true, OpAssertion.WordOrLargerAssertion);
+        public static final AMD64MIOp BTS   = new AMD64MIOp("BTS",  true,  P_0F, 0xBA, 5, true, OpAssertion.WordOrLargerAssertion);
         public static final AMD64MIOp MOVB  = new AMD64MIOp("MOVB", true,        0xC6, 0, false, OpAssertion.ByteAssertion);
         public static final AMD64MIOp MOV   = new AMD64MIOp("MOV",  false,       0xC7, 0, false, OpAssertion.WordOrLargerAssertion);
         public static final AMD64MIOp SAR   = new AMD64MIOp("SAR",  true,        0xC1, 7, true, OpAssertion.WordOrLargerAssertion);
@@ -677,8 +753,9 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
      * <p>
      * Note that when {@code src} is a memory address, we will choose {@code dst} as {@code nds}
      * even if {@link PreferredNDS#SRC} is specified, which implies an implicit dependency to
-     * {@code dst}. In {@link jdk.graal.compiler.lir.amd64.vector.AMD64VectorUnary.AVXConvertOp}, we
-     * manually insert an {@code XOR} instruction for {@code dst}.
+     * {@code dst}. In
+     * {@link jdk.graal.compiler.lir.amd64.vector.AMD64VectorUnary.AVXConvertToFloatOp}, we manually
+     * insert an {@code XOR} instruction for {@code dst}.
      */
     private enum PreferredNDS {
         NONE,
@@ -962,6 +1039,8 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final SSERMIOp PBLENDW       = new SSERMIOp("PBLENDW",       true, P_0F3A,       0x0E, PreferredNDS.DST,  OpAssertion.PackedDoubleAssertion, CPUFeature.SSE4_1);
         public static final SSERMIOp PSHUFD        = new SSERMIOp("PSHUFD",        true, P_0F,         0x70, PreferredNDS.NONE,  OpAssertion.PackedDoubleAssertion, CPUFeature.SSE2);
         public static final SSERMIOp PSHUFLW       = new SSERMIOp("PSHUFLW",       true, P_0F,         0x70, PreferredNDS.NONE,  OpAssertion.DoubleAssertion, CPUFeature.SSE2);
+        // PEXTRW with a GPR destination, one byte shorter encoding than SSEMRIOp.PEXTRW.
+        public static final SSERMIOp PEXTRW_GPR    = new SSERMIOp("PEXTRW_GPR",    true, P_0F,   false, 0xC5, PreferredNDS.NONE,  OpAssertion.PackedDoubleFloatToIntAssertion, CPUFeature.SSE2);
         // @formatter:on
 
         private final PreferredNDS preferredNDS;
@@ -1237,6 +1316,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         AVX512F_DQ_512(null, null, EnumSet.of(AVX512F, AVX512DQ)),
         AVX512F_512(null, null, EnumSet.of(AVX512F)),
         AVX512_VBMI_VL(EnumSet.of(CPUFeature.AVX512_VBMI, CPUFeature.AVX512VL), EnumSet.of(CPUFeature.AVX512_VBMI, CPUFeature.AVX512VL), EnumSet.of(CPUFeature.AVX512_VBMI)),
+        AVX512_VBMI2_VL(EnumSet.of(CPUFeature.AVX512_VBMI2, CPUFeature.AVX512VL), EnumSet.of(CPUFeature.AVX512_VBMI2, CPUFeature.AVX512VL), EnumSet.of(CPUFeature.AVX512_VBMI2)),
         CLMUL_AVX512F_VL(EnumSet.of(CPUFeature.AVX512VL, CPUFeature.CLMUL), EnumSet.of(CPUFeature.AVX512VL, CPUFeature.CLMUL), EnumSet.of(CPUFeature.AVX512F, CPUFeature.CLMUL)),
         GFNI_AVX512F_VL(EnumSet.of(CPUFeature.AVX512VL, CPUFeature.GFNI), EnumSet.of(CPUFeature.AVX512VL, CPUFeature.GFNI), EnumSet.of(CPUFeature.AVX512F, CPUFeature.GFNI));
 
@@ -1313,9 +1393,12 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         XMM_CPU_AVX1_AVX512BW_128ONLY(VEXFeatureAssertion.AVX1_128, EVEXFeatureAssertion.AVX512BW_128, XMM, null, CPU),
         XMM_CPU_AVX1_AVX512DQ_128ONLY(VEXFeatureAssertion.AVX1_128, EVEXFeatureAssertion.AVX512DQ_128, XMM, null, CPU),
         CPU_XMM_AVX1_AVX512F_128ONLY(VEXFeatureAssertion.AVX1_128, EVEXFeatureAssertion.AVX512F_128, CPU, null, XMM),
+        CPU_XMM_AVX1_AVX512BW_128ONLY(VEXFeatureAssertion.AVX1_128, EVEXFeatureAssertion.AVX512BW_128, CPU, null, XMM),
+        CPU_XMM_AVX512F_128ONLY(null, EVEXFeatureAssertion.AVX512F_128, CPU, null, XMM),
         XMM_XMM_CPU_AVX1_AVX512F_128ONLY(VEXFeatureAssertion.AVX1_128, EVEXFeatureAssertion.AVX512F_128, XMM, XMM, CPU),
         XMM_XMM_CPU_AVX1_AVX512BW_128ONLY(VEXFeatureAssertion.AVX1_128, EVEXFeatureAssertion.AVX512BW_128, XMM, XMM, CPU),
         XMM_XMM_CPU_AVX1_AVX512DQ_128ONLY(VEXFeatureAssertion.AVX1_128, EVEXFeatureAssertion.AVX512DQ_128, XMM, XMM, CPU),
+        XMM_XMM_CPU_AVX512F_128ONLY(null, EVEXFeatureAssertion.AVX512F_128, XMM, XMM, CPU),
         XMM_CPU_AVX512BW_VL(null, EVEXFeatureAssertion.AVX512F_BW_VL, XMM, null, CPU),
         XMM_CPU_AVX512F_VL(null, EVEXFeatureAssertion.AVX512F_VL, XMM, null, CPU),
         AVX1_AVX512F_VL(VEXFeatureAssertion.AVX1, EVEXFeatureAssertion.AVX512F_VL, XMM, XMM, XMM),
@@ -1336,6 +1419,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         AVX512F_512ONLY(null, EVEXFeatureAssertion.AVX512F_512, XMM, XMM, XMM),
         AVX512DQ_512ONLY(null, EVEXFeatureAssertion.AVX512F_DQ_512, XMM, XMM, XMM),
         AVX512_VBMI_VL(null, EVEXFeatureAssertion.AVX512_VBMI_VL, XMM, XMM, XMM),
+        AVX512_VBMI2_VL(null, EVEXFeatureAssertion.AVX512_VBMI2_VL, XMM, XMM, XMM),
 
         AVX512F_CPU_OR_MASK(VEXFeatureAssertion.AVX512F_L0, null, CPU_OR_MASK, null, CPU_OR_MASK),
         AVX512BW_CPU_OR_MASK(VEXFeatureAssertion.AVX512BW_L0, null, CPU_OR_MASK, null, CPU_OR_MASK),
@@ -1396,6 +1480,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         AVX512F_VL(VEXOpAssertion.AVX512F_VL),
         AVX512BW_VL(VEXOpAssertion.AVX512BW_VL),
         AVX512DQ_VL(VEXOpAssertion.AVX512DQ_VL),
+        AVX512_VBMI2_VL(VEXOpAssertion.AVX512_VBMI2_VL),
         FMA(VEXOpAssertion.FMA);
 
         private final VEXOpAssertion opAssertion;
@@ -1523,30 +1608,47 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         protected final void emitVexOrEvex(AMD64Assembler asm, Register dst, Register nds, AMD64Address src, Register opmask, AVXSize size, int actualPP, int actualMMMMM, int actualW,
                         int actualWEvex, int z, int b) {
             asm.interceptMemorySrcOperands(src);
+            emitVexOrEvexImpl(asm, dst, nds, src, opmask, size, actualPP, actualMMMMM, actualW, actualWEvex, z, b);
+        }
+
+        protected final void emitVexOrEvex(AMD64Assembler asm, AMD64Address dst, Register nds, Register src, AVXSize size, int actualPP, int actualMMMMM, int actualW, int actualWEvex) {
+            emitVexOrEvex(asm, dst, nds, src, Register.None, size, actualPP, actualMMMMM, actualW, actualWEvex, Z0, B0);
+        }
+
+        protected final void emitVexOrEvex(AMD64Assembler asm, AMD64Address dst, Register nds, Register src, Register opmask, AVXSize size, int actualPP, int actualMMMMM, int actualW,
+                        int actualWEvex, int z, int b) {
+            emitVexOrEvexImpl(asm, src, nds, dst, opmask, size, actualPP, actualMMMMM, actualW, actualWEvex, z, b);
+        }
+
+        private void emitVexOrEvexImpl(AMD64Assembler asm, Register reg1, Register reg2, AMD64Address addr, Register opmask, AVXSize size, int actualPP, int actualMMMMM, int actualW,
+                        int actualWEvex, int z, int b) {
             if (isEvex) {
-                checkEvex(asm, size, dst, opmask, z, nds, null, b);
-                asm.evexPrefix(dst, opmask, nds, src, size, actualPP, actualMMMMM, actualWEvex, z, b);
+                checkEvex(asm, size, reg1, opmask, z, reg2, null, b);
+                asm.evexPrefix(reg1, opmask, reg2, addr, size, actualPP, actualMMMMM, actualWEvex, z, b);
             } else {
-                checkVex(asm, size, dst, opmask, z, nds, null, b);
-                asm.emitVEX(getLFlag(size), actualPP, actualMMMMM, actualW, getRXB(dst, src), nds.isValid() ? nds.encoding() : 0);
+                checkVex(asm, size, reg1, opmask, z, reg2, null, b);
+                asm.emitVEX(getLFlag(size), actualPP, actualMMMMM, actualW, getRXB(reg1, addr), reg2.isValid() ? reg2.encoding() : 0);
             }
         }
 
         private void checkVex(AMD64Assembler asm, AVXSize size, Register dst, Register mask, int z, Register nds, Register src, int b) {
             GraalError.guarantee(mask.equals(Register.None) && z == Z0, "{%s}%s", mask.equals(Register.None) ? mask.name : "K0", z == Z0 ? "" : " {z}");
             GraalError.guarantee(b == B0, "illegal EVEX.b");
-            GraalError.guarantee(dst == null || (!isAVX512Register(dst) && categoryContains(assertion.rCategory, dst)), "instruction %s illegal operand %s", opcode, dst);
-            GraalError.guarantee(!nds.isValid() || (!isAVX512Register(nds) && categoryContains(assertion.vCategory, nds)), "instruction %s illegal operand %s", opcode, nds);
-            GraalError.guarantee(src == null || (!isAVX512Register(src) && categoryContains(assertion.mCategory, src)), "instruction %s illegal operand %s", opcode, src);
+            GraalError.guarantee(dst == null || (!isAVX512Register(dst) && categoryContains(assertion.rCategory, dst)),
+                            "instruction %s illegal operand %s for category %s", opcode, dst, assertion.rCategory);
+            GraalError.guarantee(!nds.isValid() || (!isAVX512Register(nds) && categoryContains(assertion.vCategory, nds)),
+                            "instruction %s illegal operand %s for category %s", opcode, nds, assertion.vCategory);
+            GraalError.guarantee(src == null || (!isAVX512Register(src) && categoryContains(assertion.mCategory, src)),
+                            "instruction %s illegal operand %s for category %s", opcode, src, assertion.mCategory);
             GraalError.guarantee(assertion.vexFeatures.isValid(asm.getFeatures(), size), "instruction %s not supported for size %s", opcode, size);
         }
 
         private void checkEvex(AMD64Assembler asm, AVXSize size, Register dst, Register mask, int z, Register nds, Register src, int b) {
             GraalError.guarantee(mask.isValid() || z == Z0, "illegal EVEX.z for no mask");
             GraalError.guarantee(src == null || b == B0, "illegal EVEX.b for register operand %s", src);
-            GraalError.guarantee(dst == null || categoryContains(assertion.rCategory, dst), "instruction %s illegal operand %s", opcode, dst);
-            GraalError.guarantee(!nds.isValid() || categoryContains(assertion.vCategory, nds), "instruction %s illegal operand %s", opcode, nds);
-            GraalError.guarantee(src == null || categoryContains(assertion.mCategory, src), "instruction %s illegal operand %s", opcode, src);
+            GraalError.guarantee(dst == null || categoryContains(assertion.rCategory, dst), "instruction %s illegal operand %s for category %s", opcode, dst, assertion.rCategory);
+            GraalError.guarantee(!nds.isValid() || categoryContains(assertion.vCategory, nds), "instruction %s illegal operand %s for category %s", opcode, nds, assertion.vCategory);
+            GraalError.guarantee(src == null || categoryContains(assertion.mCategory, src), "instruction %s illegal operand %s for category %s", opcode, src, assertion.mCategory);
             GraalError.guarantee(assertion.evexFeatures.isValid(asm.getFeatures(), size), "instruction %s not supported for size %s", opcode, size);
         }
     }
@@ -1617,6 +1719,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexRMOp VCVTTSS2SQ      = new VexRMOp("VCVTTSS2SQ",      VEXPrefixConfig.P_F3, VEXPrefixConfig.M_0F,   VEXPrefixConfig.W1,  0x2C, VEXOpAssertion.CPU_XMM_AVX1_AVX512F_128ONLY, EVEXTuple.T1F_32BIT, VEXPrefixConfig.W1);
         public static final VexRMOp VCVTTSD2SI      = new VexRMOp("VCVTTSD2SI",      VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F,   VEXPrefixConfig.W0,  0x2C, VEXOpAssertion.CPU_XMM_AVX1_AVX512F_128ONLY, EVEXTuple.T1F_64BIT, VEXPrefixConfig.W0);
         public static final VexRMOp VCVTTSD2SQ      = new VexRMOp("VCVTTSD2SQ",      VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F,   VEXPrefixConfig.W1,  0x2C, VEXOpAssertion.CPU_XMM_AVX1_AVX512F_128ONLY, EVEXTuple.T1F_64BIT, VEXPrefixConfig.W1);
+        public static final VexRMOp VCVTSD2SQ       = new VexRMOp("VCVTSD2SQ",       VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F,   VEXPrefixConfig.W1,  0x2D, VEXOpAssertion.CPU_XMM_AVX1_AVX512F_128ONLY, EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
         public static final VexRMOp VCVTPS2PD       = new VexRMOp("VCVTPS2PD",       VEXPrefixConfig.P_,   VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x5A, VEXOpAssertion.AVX1_AVX512F_VL,           EVEXTuple.HVM,       VEXPrefixConfig.W0);
         public static final VexRMOp VCVTPD2PS       = new VexRMOp("VCVTPD2PS",       VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x5A, VEXOpAssertion.AVX1_AVX512F_VL,           EVEXTuple.FVM,       VEXPrefixConfig.W1);
         public static final VexRMOp VCVTDQ2PS       = new VexRMOp("VCVTDQ2PS",       VEXPrefixConfig.P_,   VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x5B, VEXOpAssertion.AVX1_AVX512F_VL,           EVEXTuple.FVM,       VEXPrefixConfig.W0);
@@ -1657,12 +1760,18 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexRMOp VPABSW          = new VexRMOp("VPABSW",          VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.WIG, 0x1D, VEXOpAssertion.AVX1_AVX2_AVX512BW_VL,     EVEXTuple.FVM,       VEXPrefixConfig.WIG);
         public static final VexRMOp VPABSD          = new VexRMOp("VPABSD",          VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.WIG, 0x1E, VEXOpAssertion.AVX1_AVX2_AVX512F_VL,      EVEXTuple.FVM,       VEXPrefixConfig.W0);
         public static final VexRMOp VCVTPH2PS       = new VexRMOp("VCVTPH2PS",       VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0,  0x13, VEXOpAssertion.F16C_AVX512F_VL,           EVEXTuple.HVM,       VEXPrefixConfig.W0);
+        public static final VexRMOp VRCPPS          = new VexRMOp("VRCPPS",          VEXPrefixConfig.P_,   VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x53, VEXOpAssertion.AVX1);
 
         // EVEX encoded instructions
         public static final VexRMOp EVCVTTSS2SI     = new VexRMOp("EVCVTTSS2SI",     VCVTTSS2SI);
         public static final VexRMOp EVCVTTSS2SQ     = new VexRMOp("EVCVTTSS2SQ",     VCVTTSS2SQ);
+        public static final VexRMOp EVCVTTSS2USI    = new VexRMOp("EVCVTTSS2USI",    VEXPrefixConfig.P_F3, VEXPrefixConfig.M_0F,   VEXPrefixConfig.W0,  0x78, VEXOpAssertion.CPU_XMM_AVX512F_128ONLY,   EVEXTuple.T1F_32BIT, VEXPrefixConfig.W0, true);
+        public static final VexRMOp EVCVTTSS2USQ    = new VexRMOp("EVCVTTSS2USQ",    VEXPrefixConfig.P_F3, VEXPrefixConfig.M_0F,   VEXPrefixConfig.W1,  0x78, VEXOpAssertion.CPU_XMM_AVX512F_128ONLY,   EVEXTuple.T1F_32BIT, VEXPrefixConfig.W1, true);
         public static final VexRMOp EVCVTTSD2SI     = new VexRMOp("EVCVTTSD2SI",     VCVTTSD2SI);
         public static final VexRMOp EVCVTTSD2SQ     = new VexRMOp("EVCVTTSD2SQ",     VCVTTSD2SQ);
+        public static final VexRMOp EVCVTSD2SQ      = new VexRMOp("EVCVTSD2SQ", VCVTSD2SQ);
+        public static final VexRMOp EVCVTTSD2USI    = new VexRMOp("EVCVTTSD2USI",    VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F,   VEXPrefixConfig.W0,  0x78, VEXOpAssertion.CPU_XMM_AVX512F_128ONLY,   EVEXTuple.T1F_64BIT, VEXPrefixConfig.W0, true);
+        public static final VexRMOp EVCVTTSD2USQ    = new VexRMOp("EVCVTTSD2USQ",    VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F,   VEXPrefixConfig.W1,  0x78, VEXOpAssertion.CPU_XMM_AVX512F_128ONLY,   EVEXTuple.T1F_64BIT, VEXPrefixConfig.W1, true);
         public static final VexRMOp EVCVTPS2PD      = new VexRMOp("EVCVTPS2PD",      VCVTPS2PD);
         public static final VexRMOp EVCVTPD2PS      = new VexRMOp("EVCVTPD2PS",      VCVTPD2PS);
         public static final VexRMOp EVCVTDQ2PS      = new VexRMOp("EVCVTDQ2PS",      VCVTDQ2PS);
@@ -1705,7 +1814,13 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexRMOp EVPABSD         = new VexRMOp("EVPABSD",         VPABSD);
         public static final VexRMOp EVPABSQ         = new VexRMOp("EVPABSQ",         VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.WIG, 0x1F, VEXOpAssertion.AVX512F_VL,                EVEXTuple.FVM,       VEXPrefixConfig.W1, true);
         public static final VexRMOp EVCVTPH2PS      = new VexRMOp("EVCVTPH2PS",      VCVTPH2PS);
+        // EVEX replacement for VRCPPS
+        public static final VexRMOp EVRCP14PS       = new VexRMOp("EVRCP14PS",       VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0,  0x4C, VEXOpAssertion.AVX512F_VL,                EVEXTuple.FVM,       VEXPrefixConfig.W0, true);
 
+        public static final VexRMOp EVPEXPANDB      = new VexRMOp("EVPEXPANDB",      VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0,  0x62, VEXOpAssertion.AVX512_VBMI2_VL,           EVEXTuple.T1S_8BIT,  VEXPrefixConfig.W0, true);
+        public static final VexRMOp EVPEXPANDW      = new VexRMOp("EVPEXPANDW",      VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W1,  0x62, VEXOpAssertion.AVX512_VBMI2_VL,           EVEXTuple.T1S_16BIT, VEXPrefixConfig.W1, true);
+        public static final VexRMOp EVPEXPANDD      = new VexRMOp("EVPEXPANDD",      VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0,  0x89, VEXOpAssertion.AVX512F_VL,                EVEXTuple.T1S_32BIT, VEXPrefixConfig.W0, true);
+        public static final VexRMOp EVPEXPANDQ      = new VexRMOp("EVPEXPANDQ",      VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W1,  0x89, VEXOpAssertion.AVX512F_VL,                EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1, true);
         // @formatter:on
 
         protected VexRMOp(String opcode, int pp, int mmmmm, int w, int op, VEXOpAssertion assertion) {
@@ -1795,7 +1910,12 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexMoveOp VMOVSS    = new VexMoveOp("VMOVSS",    VEXPrefixConfig.P_F3, VEXPrefixConfig.M_0F, VEXPrefixConfig.WIG, 0x10, 0x11, VEXOpAssertion.AVX1_AVX512F_128,        EVEXTuple.T1S_32BIT, VEXPrefixConfig.W0);
         public static final VexMoveOp VMOVSD    = new VexMoveOp("VMOVSD",    VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F, VEXPrefixConfig.WIG, 0x10, 0x11, VEXOpAssertion.AVX1_AVX512F_128,        EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
         public static final VexMoveOp VMOVD     = new VexMoveOp("VMOVD",     VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F, VEXPrefixConfig.W0,  0x6E, 0x7E, VEXOpAssertion.AVX1_AVX512F_CPU_OR_XMM, EVEXTuple.T1S_32BIT, VEXPrefixConfig.W0);
+        /** "MOVD/MOVQ—Move Doubleword/Move Quadword". Can be used for MEM/GPR <- XMM and XMM <- MEM/GPR moves. */
         public static final VexMoveOp VMOVQ     = new VexMoveOp("VMOVQ",     VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F, VEXPrefixConfig.W1,  0x6E, 0x7E, VEXOpAssertion.AVX1_AVX512F_CPU_OR_XMM, EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
+        /** "MOVQ—Move Quadword". Can be used for MEM <- XMM moves. Shorter encoding than {@link #VMOVQ} with a memory operand. */
+        public static final VexMoveOp VMOVQ_MEM_XMM = new VexMoveOp("VMOVQ_MEM_XMM", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F, VEXPrefixConfig.WIG, 0x7E, 0xD6, VEXOpAssertion.AVX1_AVX512F_128, EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
+        /** "MOVQ—Move Quadword". Can be used for XMM <- XMM and XMM <- MEM moves. Shorter encoding than {@link #VMOVQ} with a memory operand. */
+        public static final VexMoveOp VMOVQ_XMM_MEM = new VexMoveOp("VMOVQ_XMM_MEM", VEXPrefixConfig.P_F3, VEXPrefixConfig.M_0F, VEXPrefixConfig.WIG, 0x7E, 0xD6, VEXOpAssertion.AVX1_AVX512F_128, EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
 
         // EVEX encoded instructions
         public static final VexMoveOp EVMOVDQA32 = new VexMoveOp("EVMOVDQA32", VMOVDQA32);
@@ -1812,6 +1932,8 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexMoveOp EVMOVSD    = new VexMoveOp("EVMOVSD",    VMOVSD);
         public static final VexMoveOp EVMOVD     = new VexMoveOp("EVMOVD",     VMOVD);
         public static final VexMoveOp EVMOVQ     = new VexMoveOp("EVMOVQ",     VMOVQ);
+        public static final VexMoveOp EVMOVQ_MEM_XMM = new VexMoveOp("EVMOVQ_MEM_XMM", VMOVQ_MEM_XMM);
+        public static final VexMoveOp EVMOVQ_XMM_MEM = new VexMoveOp("EVMOVQ_XMM_MEM", VMOVQ_XMM_MEM);
         // @formatter:on
 
         private final int opReverse;
@@ -1844,13 +1966,13 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
         @Override
         public void emit(AMD64Assembler asm, AVXSize size, AMD64Address dst, Register src) {
-            emitVexOrEvex(asm, src, Register.None, dst, size, pp, mmmmm, w, wEvex);
+            emitVexOrEvex(asm, dst, Register.None, src, size, pp, mmmmm, w, wEvex);
             asm.emitByte(opReverse);
             asm.emitOperandHelper(src, dst, 0, getDisp8Scale(isEvex, size));
         }
 
         public void emit(AMD64Assembler asm, AVXKind.AVXSize size, AMD64Address dst, Register src, Register mask) {
-            emitVexOrEvex(asm, src, Register.None, dst, mask, size, pp, mmmmm, w, wEvex, Z0, B0);
+            emitVexOrEvex(asm, dst, Register.None, src, mask, size, pp, mmmmm, w, wEvex, Z0, B0);
             asm.emitByte(opReverse);
             asm.emitOperandHelper(src, dst, 0, getDisp8Scale(isEvex, size));
         }
@@ -1877,7 +1999,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         }
 
         public void emit(AMD64Assembler asm, AVXSize size, AMD64Address dst, Register src, Register mask, int z, int b) {
-            emitVexOrEvex(asm, src, Register.None, dst, mask, size, pp, mmmmm, w, wEvex, z, b);
+            emitVexOrEvex(asm, dst, Register.None, src, mask, size, pp, mmmmm, w, wEvex, z, b);
             asm.emitByte(opReverse);
             asm.emitOperandHelper(src, dst, 0, getDisp8Scale(isEvex, size));
         }
@@ -1923,6 +2045,9 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexRMIOp VPERMPD          = new VexRMIOp("VPERMPD",          VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W1,  0x01, VEXOpAssertion.AVX2_AVX512F_VL_256_512, EVEXTuple.FVM, VEXPrefixConfig.W1);
         public static final VexRMIOp RORXL            = new VexRMIOp("RORXL",            VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W0,  0xF0, VEXOpAssertion.BMI2);
         public static final VexRMIOp RORXQ            = new VexRMIOp("RORXQ",            VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W1,  0xF0, VEXOpAssertion.BMI2);
+        public static final VexRMIOp VPBLENDW         = new VexRMIOp("VPBLENDW",         VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.WIG, 0x0E, VEXOpAssertion.AVX1_2);
+        public static final VexRMIOp VPCMPESTRI       = new VexRMIOp("VPCMPESTRI",       VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.WIG, 0x61, VEXOpAssertion.AVX1_128ONLY);
+        public static final VexRMIOp VPEXTRW_GPR      = new VexRMIOp("VPEXTRW_GPR",      VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F,   VEXPrefixConfig.W0,  0xC5, VEXOpAssertion.CPU_XMM_AVX1_AVX512BW_128ONLY, EVEXTuple.FVM, VEXPrefixConfig.WIG);
 
         // EVEX encoded instructions
         public static final VexRMIOp EVPERMILPD       = new VexRMIOp("EVPERMILPD",       VPERMILPD);
@@ -1932,6 +2057,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexRMIOp EVPSHUFLW        = new VexRMIOp("EVPSHUFLW",        VPSHUFLW);
         public static final VexRMIOp EVPSHUFHW        = new VexRMIOp("EVPSHUFHW",        VPSHUFHW);
         public static final VexRMIOp EVPSHUFD         = new VexRMIOp("EVPSHUFD",         VPSHUFD);
+        public static final VexRMIOp EVPEXTRW_GPR     = new VexRMIOp("EVPEXTRW_GPR",     VPEXTRW_GPR);
         // @formatter:on
 
         protected VexRMIOp(String opcode, int pp, int mmmmm, int w, int op, VEXOpAssertion assertion) {
@@ -1990,8 +2116,10 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
      */
     public static final class EvexRMIOp extends VexRMIOp {
         // @formatter:off
-        public static final EvexRMIOp EVFPCLASSSS = new EvexRMIOp("EVFPCLASS", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W0, 0x67, VEXOpAssertion.MASK_XMM_AVX512DQ_128, EVEXTuple.T1S_32BIT, VEXPrefixConfig.W0);
-        public static final EvexRMIOp EVFPCLASSSD = new EvexRMIOp("EVFPCLASD", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W1, 0x67, VEXOpAssertion.MASK_XMM_AVX512DQ_128, EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
+        public static final EvexRMIOp EVFPCLASSSS = new EvexRMIOp("EVFPCLASSSS", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W0, 0x67, VEXOpAssertion.MASK_XMM_AVX512DQ_128, EVEXTuple.T1S_32BIT, VEXPrefixConfig.W0);
+        public static final EvexRMIOp EVFPCLASSSD = new EvexRMIOp("EVFPCLASSSD", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W1, 0x67, VEXOpAssertion.MASK_XMM_AVX512DQ_128, EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
+        public static final EvexRMIOp EVFPCLASSPS = new EvexRMIOp("EVFPCLASSPS", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W0, 0x66, VEXOpAssertion.MASK_XMM_AVX512DQ_VL, EVEXTuple.T1F_32BIT, VEXPrefixConfig.W0);
+        public static final EvexRMIOp EVFPCLASSPD = new EvexRMIOp("EVFPCLASSPD", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W1, 0x66, VEXOpAssertion.MASK_XMM_AVX512DQ_VL, EVEXTuple.T1F_64BIT, VEXPrefixConfig.W1);
         // @formatter:on
 
         private EvexRMIOp(String opcode, int pp, int mmmmm, int w, int op, VEXOpAssertion assertion, EVEXTuple evexTuple, int wEvex) {
@@ -2047,7 +2175,10 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
      */
     public static final class VexMROp extends VexRROp {
         // @formatter:off
+        public static final VexMROp EVPCOMPRESSB = new VexMROp("EVPCOMPRESSB", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0, 0x63, VEXOpAssertion.AVX512_VBMI2_VL,           EVEXTuple.T1S_8BIT,  VEXPrefixConfig.W0, true);
+        public static final VexMROp EVPCOMPRESSW = new VexMROp("EVPCOMPRESSW", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W1, 0x63, VEXOpAssertion.AVX512_VBMI2_VL,           EVEXTuple.T1S_16BIT, VEXPrefixConfig.W1, true);
         public static final VexMROp EVPCOMPRESSD = new VexMROp("EVPCOMPRESSD", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0, 0x8B, VEXOpAssertion.AVX512F_VL,                EVEXTuple.T1S_32BIT, VEXPrefixConfig.W0, true);
+        public static final VexMROp EVPCOMPRESSQ = new VexMROp("EVPCOMPRESSQ", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W1, 0x8B, VEXOpAssertion.AVX512F_VL,                EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1, true);
 
         public static final VexMROp EVPMOVWB     = new VexMROp("EVPMOVWB",     VEXPrefixConfig.P_F3, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0, 0x30, VEXOpAssertion.AVX512BW_VL,               EVEXTuple.HVM,       VEXPrefixConfig.W0, true);
         public static final VexMROp EVPMOVDB     = new VexMROp("EVPMOVDB",     VEXPrefixConfig.P_F3, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0, 0x31, VEXOpAssertion.AVX512F_VL,                EVEXTuple.QVM,       VEXPrefixConfig.W0, true);
@@ -2059,6 +2190,16 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
         private VexMROp(String opcode, int pp, int mmmmm, int w, int op, VEXOpAssertion assertion, EVEXTuple evexTuple, int wEvex, boolean isEvex) {
             super(opcode, pp, mmmmm, w, op, assertion, evexTuple, wEvex, isEvex);
+        }
+
+        /**
+         * Build the EVEX variant of a given vexOp.
+         */
+        private VexMROp(String opcode, VexMROp vexOp) {
+            this(opcode, vexOp.pp, vexOp.mmmmm, vexOp.w, vexOp.op, vexOp.assertion, vexOp.evexTuple, vexOp.wEvex, true);
+            variant = vexOp;
+            assert vexOp.variant == null : "found 2 EVEX variants for VEX instruction " + vexOp;
+            vexOp.variant = this;
         }
 
         @Override
@@ -2358,9 +2499,13 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexRVMOp VMOVHPD         = new VexRVMOp("VMOVHPD",     VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x16, VEXOpAssertion.AVX1_AVX512F_128,             EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
         public static final VexRVMOp VMOVLPD         = new VexRVMOp("VMOVLPD",     VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x12, VEXOpAssertion.AVX1_AVX512F_128,             EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
         public static final VexRVMOp VMOVLHPS        = new VexRVMOp("VMOVLHPS",    VEXPrefixConfig.P_,   VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x16, VEXOpAssertion.AVX1_AVX512F_128,             EVEXTuple.FVM,       VEXPrefixConfig.W0);
+        public static final VexRVMOp VPUNPCKLBW      = new VexRVMOp("VPUNPACKLBW", VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x60, VEXOpAssertion.AVX1_AVX2_AVX512BW_VL,        EVEXTuple.FVM,       VEXPrefixConfig.WIG);
+        public static final VexRVMOp VUNPCKHPD       = new VexRVMOp("VUNPCKHPD",   VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x15, VEXOpAssertion.AVX1_AVX512F_VL,              EVEXTuple.FVM,       VEXPrefixConfig.W1);
+        public static final VexRVMOp VUNPCKLPD       = new VexRVMOp("VUNPCKLPD",   VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F,   VEXPrefixConfig.WIG, 0x14, VEXOpAssertion.AVX1_AVX512F_VL,              EVEXTuple.FVM,       VEXPrefixConfig.W1);
 
         public static final VexRVMOp VPHADDW         = new VexRVMOp("VPHADDW",     VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.WIG, 0x01, VEXOpAssertion.AVX1_2);
         public static final VexRVMOp VPHADDD         = new VexRVMOp("VPHADDD",     VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.WIG, 0x02, VEXOpAssertion.AVX1_2);
+
         // EVEX encoded instructions
         public static final VexRVMOp EVANDPS         = new VexRVMOp("EVANDPS",      VANDPS);
         public static final VexRVMOp EVANDPD         = new VexRVMOp("EVANDPD",      VANDPD);
@@ -2484,6 +2629,14 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexRVMOp EVMOVHPD        = new VexRVMOp("EVMOVHPD",     VMOVHPD);
         public static final VexRVMOp EVMOVLPD        = new VexRVMOp("EVMOVLPD",     VMOVLPD);
         public static final VexRVMOp EVMOVLHPS       = new VexRVMOp("EVMOVLHPS",    VMOVLHPS);
+        public static final VexRVMOp EVPUNPCKLBW     = new VexRVMOp("EVPUNPCKLBW",  VPUNPCKLBW);
+        public static final VexRVMOp EVUNPCKHPD      = new VexRVMOp("EVUNPCKHPD",   VUNPCKHPD);
+        public static final VexRVMOp EVUNPCKLPD      = new VexRVMOp("EVUNPCKLPD",   VUNPCKLPD);
+
+        public static final VexRVMOp EVPTESTMB       = new VexRVMOp("EVPTESTMB",    VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0,  0x26, VEXOpAssertion.MASK_XMM_XMM_AVX512BW_VL,     EVEXTuple.FVM,       VEXPrefixConfig.W0, true);
+        public static final VexRVMOp EVPTESTMW       = new VexRVMOp("EVPTESTMB",    VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W1,  0x26, VEXOpAssertion.MASK_XMM_XMM_AVX512BW_VL,     EVEXTuple.FVM,       VEXPrefixConfig.W1, true);
+        public static final VexRVMOp EVPTESTMD       = new VexRVMOp("EVPTESTMB",    VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W0,  0x27, VEXOpAssertion.MASK_XMM_XMM_AVX512BW_VL,     EVEXTuple.FVM,       VEXPrefixConfig.W0, true);
+        public static final VexRVMOp EVPTESTMQ       = new VexRVMOp("EVPTESTMB",    VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F38, VEXPrefixConfig.W1,  0x27, VEXOpAssertion.MASK_XMM_XMM_AVX512BW_VL,     EVEXTuple.FVM,       VEXPrefixConfig.W1, true);
         // @formatter:on
 
         protected VexRVMOp(String opcode, int pp, int mmmmm, int w, int op, VEXOpAssertion assertion) {
@@ -2562,10 +2715,19 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         public static final VexRVMConvertOp EVCVTSQ2SD = new VexRVMConvertOp("EVCVTSQ2SD", VCVTSQ2SD);
         public static final VexRVMConvertOp EVCVTSI2SS = new VexRVMConvertOp("EVCVTSI2SS", VCVTSI2SS);
         public static final VexRVMConvertOp EVCVTSQ2SS = new VexRVMConvertOp("EVCVTSQ2SS", VCVTSQ2SS);
+
+        public static final VexRVMConvertOp EVCVTUSI2SD = new VexRVMConvertOp("EVCVTUSI2SD", VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F, VEXPrefixConfig.W0, 0x7B, VEXOpAssertion.XMM_XMM_CPU_AVX512F_128ONLY, EVEXTuple.T1S_32BIT, VEXPrefixConfig.W0, true);
+        public static final VexRVMConvertOp EVCVTUSQ2SD = new VexRVMConvertOp("EVCVTUSQ2SD", VEXPrefixConfig.P_F2, VEXPrefixConfig.M_0F, VEXPrefixConfig.W0, 0x7B, VEXOpAssertion.XMM_XMM_CPU_AVX512F_128ONLY, EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1, true);
+        public static final VexRVMConvertOp EVCVTUSI2SS = new VexRVMConvertOp("EVCVTUSI2SS", VEXPrefixConfig.P_F3, VEXPrefixConfig.M_0F, VEXPrefixConfig.W0, 0x7B, VEXOpAssertion.XMM_XMM_CPU_AVX512F_128ONLY, EVEXTuple.T1S_32BIT, VEXPrefixConfig.W0, true);
+        public static final VexRVMConvertOp EVCVTUSQ2SS = new VexRVMConvertOp("EVCVTUSQ2SS", VEXPrefixConfig.P_F3, VEXPrefixConfig.M_0F, VEXPrefixConfig.W0, 0x7B, VEXOpAssertion.XMM_XMM_CPU_AVX512F_128ONLY, EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1, true);
         // @formatter:on
 
         private VexRVMConvertOp(String opcode, int pp, int mmmmm, int w, int op, VEXOpAssertion assertion, EVEXTuple evexTuple, int wEvex) {
             super(opcode, pp, mmmmm, w, op, assertion, evexTuple, wEvex);
+        }
+
+        private VexRVMConvertOp(String opcode, int pp, int mmmmm, int w, int op, VEXOpAssertion assertion, EVEXTuple evexTuple, int wEvex, boolean isEvex) {
+            super(opcode, pp, mmmmm, w, op, assertion, evexTuple, wEvex, isEvex);
         }
 
         /**
@@ -2779,7 +2941,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
         @Override
         public void emit(AMD64Assembler asm, AVXSize size, Register dst, Register src, Register mask, int z, int b) {
-            emitVexOrEvex(asm, null, dst, src, mask, AVXSize.XMM, pp, mmmmm, size == AVXSize.DWORD ? VEXPrefixConfig.W0 : VEXPrefixConfig.W1, wEvex, z, b);
+            emitVexOrEvex(asm, (Register) null, dst, src, mask, AVXSize.XMM, pp, mmmmm, size == AVXSize.DWORD ? VEXPrefixConfig.W0 : VEXPrefixConfig.W1, wEvex, z, b);
             asm.emitByte(op);
             asm.emitModRM(ext, src);
         }
@@ -2857,7 +3019,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
         @Override
         public void emit(AMD64Assembler asm, AVXSize size, Register dst, Register src, int imm8) {
-            emitVexOrEvex(asm, null, dst, src, size, pp, mmmmm, w, wEvex);
+            emitVexOrEvex(asm, (Register) null, dst, src, size, pp, mmmmm, w, wEvex);
             asm.emitByte(immOp);
             asm.emitModRM(r, src);
             asm.emitByte(imm8);
@@ -2899,7 +3061,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
         @Override
         public void emit(AMD64Assembler asm, AVXSize size, Register dst, Register src, int imm8) {
-            emitVexOrEvex(asm, null, dst, src, size, pp, mmmmm, w, wEvex);
+            emitVexOrEvex(asm, (Register) null, dst, src, size, pp, mmmmm, w, wEvex);
             asm.emitByte(op);
             asm.emitModRM(r, src);
             asm.emitByte(imm8);
@@ -2936,7 +3098,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         }
 
         public void emit(AMD64Assembler asm, AVXSize size, AMD64Address dst, Register mask, Register src) {
-            emitVexOrEvex(asm, src, mask, dst, size, pp, mmmmm, w, wEvex);
+            emitVexOrEvex(asm, dst, mask, src, size, pp, mmmmm, w, wEvex);
             asm.emitByte(opReverse);
             asm.emitOperandHelper(src, dst, 0, getDisp8Scale(isEvex, size));
         }
@@ -3074,6 +3236,9 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         // Galois Field New Instructions
         public static final VexRVMIOp VGF2P8AFFINEQB  = new VexRVMIOp("VGF2P8AFFINEQB",  VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.W1, 0xCE, VEXOpAssertion.GFNI_AVX1_AVX512F_VL, EVEXTuple.FVM,     VEXPrefixConfig.W1);
 
+        public static final VexRVMIOp VROUNDSS     = new VexRVMIOp("VROUNDSS",     VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.WIG, 0x0A, VEXOpAssertion.AVX1_AVX512F_128,          EVEXTuple.T1S_32BIT, VEXPrefixConfig.W0);
+        public static final VexRVMIOp VROUNDSD     = new VexRVMIOp("VROUNDSD",     VEXPrefixConfig.P_66, VEXPrefixConfig.M_0F3A, VEXPrefixConfig.WIG, 0x0B, VEXOpAssertion.AVX1_AVX512F_128,          EVEXTuple.T1S_64BIT, VEXPrefixConfig.W1);
+
         // EVEX encoded instructions
         public static final VexRVMIOp EVPINSRB        = new VexRVMIOp("EVPINSRB",        VPINSRB);
         public static final VexRVMIOp EVPINSRW        = new VexRVMIOp("EVPINSRW",        VPINSRW);
@@ -3112,6 +3277,9 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
         // Galois Field New Instructions
         public static final VexRVMIOp EVGF2P8AFFINEQB = new VexRVMIOp("EVGF2P8AFFINEQB", VGF2P8AFFINEQB);
+
+        public static final VexRVMIOp EVRNDSCALESS    = new VexRVMIOp("EVRNDSCALESS",    VROUNDSS);
+        public static final VexRVMIOp EVRNDSCALESD    = new VexRVMIOp("EVRNDSCALESD",    VROUNDSD);
         // @formatter:on
 
         private VexRVMIOp(String opcode, int pp, int mmmmm, int w, int op, VEXOpAssertion assertion) {
@@ -3445,7 +3613,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     protected boolean ensureWithinBoundary(int opStart) {
-        if (useBranchesWithin32ByteBoundary) {
+        if (useBranchesWithin32ByteBoundary && !isRecordingCodeSnippet()) {
             int nextOpStart = position();
             int opEnd = nextOpStart - 1;
             if (mayCrossBoundary(opStart, opEnd)) {
@@ -3474,7 +3642,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
      * @return the number of nop bytes emitted
      */
     protected final int mitigateJCCErratum(int position, int bytesToEmit) {
-        if (useBranchesWithin32ByteBoundary) {
+        if (useBranchesWithin32ByteBoundary && !isRecordingCodeSnippet()) {
             int bytesUntilBoundary = bytesUntilBoundary(position);
             if (bytesUntilBoundary < bytesToEmit) {
                 nop(bytesUntilBoundary);
@@ -3484,7 +3652,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         return 0;
     }
 
-    public void jcc(ConditionFlag cc, int jumpTarget, boolean forceDisp32) {
+    protected void jcc(ConditionFlag cc, int jumpTarget, boolean forceDisp32) {
         final int shortSize = JumpType.JCCB.instrSize;
         final int longSize = JumpType.JCC.instrSize;
 
@@ -3525,12 +3693,16 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         emitByte(0x80 | cc.getValue());
         emitInt(0);
         trackJump(JumpType.JCC, pos);
+        if (isRecordingCodeSnippet()) {
+            abortRecordingCodeSnippet();
+        }
     }
 
     public final void jcc(ConditionFlag cc, Label l) {
         assert (0 <= cc.getValue()) && (cc.getValue() < 16) : "illegal cc";
         if (l.isBound()) {
-            jcc(cc, l.position(), false);
+            jcc(cc, l.position(), isRecordingCodeSnippet());
+            registerPatchInCodeSnippetRecord(position() - 4, l);
         } else if (canUseShortJump(nextJumpIdx)) {
             jccb(cc, l);
         } else {
@@ -3549,7 +3721,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void jccb(ConditionFlag cc, Label l) {
-        if (force4ByteNonZeroDisplacements) {
+        if (force4ByteNonZeroDisplacements || isRecordingCodeSnippet()) {
             jcc(cc, l);
             return;
         }
@@ -3570,13 +3742,14 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
             emitByte(0);
             trackJump(JumpType.JCCB, pos);
         }
+        GraalError.guarantee(!isRecordingCodeSnippet(), "Short jump is unlikely applicable when replaying code snippet");
     }
 
     public final void jcc(ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
         if (branchTarget == null) {
             // jump to placeholder
             jcc(cc, 0, true);
-        } else if (isShortJmp) {
+        } else if (isShortJmp && !isRecordingCodeSnippet()) {
             jccb(cc, branchTarget);
         } else {
             jcc(cc, branchTarget);
@@ -3621,6 +3794,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     public final void jmp(Label l) {
         if (l.isBound()) {
             jmp(l.position(), false);
+            registerPatchInCodeSnippetRecord(position() - 4, l);
         } else if (canUseShortJump(nextJumpIdx)) {
             jmpb(l);
         } else {
@@ -3738,10 +3912,17 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     @Override
+    protected final void patchRelativeJumpTarget(int branch, int offset) {
+        int currentOffset = getInt(branch);
+        emitInt(currentOffset + offset, branch);
+    }
+
+    @Override
     protected final void patchJumpTarget(int branch, int branchTarget) {
         int op = getByte(branch);
         // @formatter:off
         assert op == 0xE8 // call
+                || op == 0xFF // jump table
                 || op == 0x00 // jump table entry
                 || op == 0xE9 // jmp
                 || op == 0xEB // short jmp
@@ -3750,7 +3931,10 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
                 : "Invalid opcode at patch point branch=" + branch + ", branchTarget=" + branchTarget + ", op=" + op;
         // @formatter:on
 
-        if (op == 0x00) {
+        if (op == 0xFF) {
+            int imm32 = branchTarget - (branch + 4);
+            emitInt(imm32, branch);
+        } else if (op == 0x00) {
             int offsetToJumpTableBase = getShort(branch + 1);
             int jumpTableBase = branch - offsetToJumpTableBase;
             int imm32 = branchTarget - jumpTableBase;
@@ -3767,9 +3951,8 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
                 throw new BranchTargetOutOfBoundsException(true, "Displacement too large to be encoded as a byte: %d", imm8);
             }
             emitByte(imm8, branch + 1);
-
+            updatePatchInCodeSnippet(branch, 1);
         } else {
-
             int off = 1;
             if (op == 0x0F) {
                 off = 2;
@@ -3777,6 +3960,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
             int imm32 = branchTarget - (branch + 4 + off);
             emitInt(imm32, branch + off);
+            updatePatchInCodeSnippet(branch, off);
         }
     }
 
@@ -3928,7 +4112,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
      * a previous code emit has found that this jump will have a sufficiently small displacement.
      */
     private boolean canUseShortJump(int jumpIdx) {
-        return !force4ByteNonZeroDisplacements && optimizeLongJumps && longToShortJumps != null && longToShortJumps.contains(jumpIdx);
+        return !force4ByteNonZeroDisplacements && optimizeLongJumps && longToShortJumps != null && longToShortJumps.contains(jumpIdx) && !isRecordingCodeSnippet();
     }
 
     /**
@@ -4184,6 +4368,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         if (l.isBound()) {
             emitByte(0xE8);
             emitInt(l.position());
+            registerPatchInCodeSnippetRecord(position() - 4, l);
         } else {
             l.addPatchAt(position(), this);
             emitByte(0xE8);
@@ -4422,9 +4607,13 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
     public final void movlhps(Register dst, Register src) {
         assert inRC(XMM, dst) && inRC(XMM, src) : dst + " " + src;
-        simdPrefix(dst, dst, src, OperandSize.PS, P_0F, false);
-        emitByte(0x16);
-        emitModRM(dst, src);
+        if (supports(CPUFeature.AVX)) {
+            VexRVMOp.VMOVLHPS.encoding(avxEncoding).emit(this, AVXSize.XMM, dst, dst, src);
+        } else {
+            simdPrefix(dst, dst, src, OperandSize.PS, P_0F, false);
+            emitByte(0x16);
+            emitModRM(dst, src);
+        }
     }
 
     /**
@@ -4435,10 +4624,14 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
      */
     public final void movlpd(Register dst, AMD64Address src) {
         assert inRC(XMM, dst);
-        interceptMemorySrcOperands(src);
-        simdPrefix(dst, dst, src, OperandSize.PD, P_0F, false);
-        emitByte(0x12);
-        emitOperandHelper(dst, src, 0);
+        if (supports(CPUFeature.AVX)) {
+            VexRVMOp.VMOVLPD.encoding(avxEncoding).emit(this, AVXSize.XMM, dst, dst, src);
+        } else {
+            interceptMemorySrcOperands(src);
+            simdPrefix(dst, dst, src, OperandSize.PD, P_0F, false);
+            emitByte(0x12);
+            emitOperandHelper(dst, src, 0);
+        }
     }
 
     public final void movq(Register dst, AMD64Address src) {
@@ -4447,15 +4640,16 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
     public final void movq(Register dst, AMD64Address src, boolean force4BytesDisplacement) {
         if (inRC(XMM, dst)) {
-            // Insn: MOVQ xmm, r/m64
-            // Code: F3 0F 7E /r
-            // An alternative instruction would be 66 REX.W 0F 6E /r. We prefer the REX.W free
-            // format, because it would allow us to emit 2-bytes-prefixed vex-encoding instruction
-            // when applicable.
-            interceptMemorySrcOperands(src);
-            simdPrefix(dst, Register.None, src, OperandSize.SS, P_0F, false);
-            emitByte(0x7E);
-            emitOperandHelper(dst, src, force4BytesDisplacement, 0);
+            if (supports(CPUFeature.AVX)) {
+                VexMoveOp.VMOVQ_XMM_MEM.encoding(avxEncoding).emit(this, AVXSize.XMM, dst, src);
+            } else {
+                // Insn: MOVQ xmm, r/m64
+                // Code: F3 0F 7E /r
+                interceptMemorySrcOperands(src);
+                simdPrefix(dst, Register.None, src, OperandSize.SS, P_0F, false);
+                emitByte(0x7E);
+                emitOperandHelper(dst, src, force4BytesDisplacement, 0);
+            }
         } else {
             // gpr version of movq
             AMD64RMOp.MOV.emit(this, OperandSize.QWORD, dst, src, force4BytesDisplacement);
@@ -4480,11 +4674,15 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
     public final void movq(Register dst, Register src) {
         if (inRC(XMM, dst) && inRC(XMM, src)) {
-            // Insn: MOVQ xmm1, xmm2
-            // Code: F3 0F 7E /r
-            simdPrefix(dst, Register.None, src, OperandSize.SS, P_0F, false);
-            emitByte(0x7E);
-            emitModRM(dst, src);
+            if (supports(CPUFeature.AVX)) {
+                VexMoveOp.VMOVQ_XMM_MEM.encoding(avxEncoding).emit(this, AVXSize.QWORD, dst, src);
+            } else {
+                // Insn: MOVQ xmm1, xmm2
+                // Code: F3 0F 7E /r
+                simdPrefix(dst, Register.None, src, OperandSize.SS, P_0F, false);
+                emitByte(0x7E);
+                emitModRM(dst, src);
+            }
         } else {
             AMD64RMOp.MOV.emit(this, OperandSize.QWORD, dst, src);
         }
@@ -4492,14 +4690,15 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
     public final void movq(AMD64Address dst, Register src) {
         if (inRC(XMM, src)) {
-            // Insn: MOVQ r/m64, xmm
-            // Code: 66 0F D6 /r
-            // An alternative instruction would be 66 REX.W 0F 7E /r. We prefer the REX.W free
-            // format, because it would allow us to emit 2-bytes-prefixed vex-encoding instruction
-            // when applicable.
-            simdPrefix(src, Register.None, dst, OperandSize.PD, P_0F, false);
-            emitByte(0xD6);
-            emitOperandHelper(src, dst, 0);
+            if (supports(CPUFeature.AVX)) {
+                VexMoveOp.VMOVQ_MEM_XMM.encoding(avxEncoding).emit(this, AVXSize.XMM, dst, src);
+            } else {
+                // Insn: MOVQ r/m64, xmm
+                // Code: 66 0F D6 /r
+                simdPrefix(src, Register.None, dst, OperandSize.PD, P_0F, false);
+                emitByte(0xD6);
+                emitOperandHelper(src, dst, 0);
+            }
         } else {
             // gpr version of movq
             AMD64MROp.MOV.emit(this, OperandSize.QWORD, dst, src);
@@ -4521,18 +4720,19 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
     public final void pextrw(Register dst, Register src, int imm8) {
         assert inRC(CPU, dst) && inRC(XMM, src) : dst + " " + src;
-        simdPrefix(dst, Register.None, src, OperandSize.PD, P_0F, false);
-        emitByte(0xC5);
-        emitModRM(dst, src);
-        emitByte(imm8);
+        simdOp(SSERMIOp.PEXTRW_GPR, OperandSize.PD, VexRMIOp.VPEXTRW_GPR, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pmovmskb(Register dst, Register src) {
         assert supports(CPUFeature.SSE2);
         assert inRC(CPU, dst) && inRC(XMM, src) : dst + " " + src;
-        simdPrefix(dst, Register.None, src, OperandSize.PD, P_0F, false);
-        emitByte(0xD7);
-        emitModRM(dst, src);
+        if (supports(CPUFeature.AVX)) {
+            VexRMOp.VPMOVMSKB.encoding(avxEncoding).emit(this, AVXSize.XMM, dst, src);
+        } else {
+            simdPrefix(dst, Register.None, src, OperandSize.PD, P_0F, false);
+            emitByte(0xD7);
+            emitModRM(dst, src);
+        }
     }
 
     public final void pop(Register dst) {
@@ -4726,11 +4926,11 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void addpd(Register dst, Register src) {
-        SSEOp.ADD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.ADD, OperandSize.PD, VexRVMOp.VADDPD, AVXSize.XMM, dst, src);
     }
 
     public final void addpd(Register dst, AMD64Address src) {
-        SSEOp.ADD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.ADD, OperandSize.PD, VexRVMOp.VADDPD, AVXSize.XMM, dst, src);
     }
 
     public final void addq(Register dst, int imm32) {
@@ -4754,11 +4954,11 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void addsd(Register dst, Register src) {
-        SSEOp.ADD.emit(this, OperandSize.SD, dst, src);
+        simdOp(SSEOp.ADD, OperandSize.SD, VexRVMOp.VADDSD, AVXSize.XMM, dst, src);
     }
 
     public final void addsd(Register dst, AMD64Address src) {
-        SSEOp.ADD.emit(this, OperandSize.SD, dst, src);
+        simdOp(SSEOp.ADD, OperandSize.SD, VexRVMOp.VADDSD, AVXSize.XMM, dst, src);
     }
 
     public final void adoxq(Register dst, Register src) {
@@ -4766,19 +4966,19 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void aesdec(Register dst, Register src) {
-        SSEOp.AESDEC.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.AESDEC, OperandSize.PD, VexAESOp.VAESDEC, AVXSize.XMM, dst, src);
     }
 
     public final void aesdeclast(Register dst, Register src) {
-        SSEOp.AESDECLAST.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.AESDECLAST, OperandSize.PD, VexAESOp.VAESDECLAST, AVXSize.XMM, dst, src);
     }
 
     public final void aesenc(Register dst, Register src) {
-        SSEOp.AESENC.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.AESENC, OperandSize.PD, VexAESOp.VAESENC, AVXSize.XMM, dst, src);
     }
 
     public final void aesenclast(Register dst, Register src) {
-        SSEOp.AESENCLAST.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.AESENCLAST, OperandSize.PD, VexAESOp.VAESENCLAST, AVXSize.XMM, dst, src);
     }
 
     public final void andl(Register dst, int imm32) {
@@ -4790,15 +4990,15 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void andnpd(Register dst, Register src) {
-        SSEOp.ANDN.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.ANDN, OperandSize.PD, VexRVMOp.VANDNPD, AVXSize.XMM, dst, src);
     }
 
     public final void andpd(Register dst, Register src) {
-        SSEOp.AND.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.AND, OperandSize.PD, VexRVMOp.VANDPD, AVXSize.XMM, dst, src);
     }
 
     public final void andpd(Register dst, AMD64Address src) {
-        SSEOp.AND.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.AND, OperandSize.PD, VexRVMOp.VANDPD, AVXSize.XMM, dst, src);
     }
 
     public final void andq(Register dst, int imm32) {
@@ -4835,6 +5035,10 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
     public final void btrq(Register src, int imm8) {
         AMD64MIOp.BTR.emit(this, OperandSize.QWORD, src, imm8);
+    }
+
+    public final void btsq(Register src, int imm8) {
+        AMD64MIOp.BTS.emit(this, OperandSize.QWORD, src, imm8);
     }
 
     public final void cmpb(Register dst, Register src) {
@@ -4924,35 +5128,35 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void cvtdq2pd(Register dst, Register src) {
-        SSEOp.CVTDQ2PD.emit(this, OperandSize.SS, dst, src);
+        simdOp(SSEOp.CVTDQ2PD, OperandSize.SS, VexRMOp.VCVTDQ2PD, AVXSize.XMM, dst, src);
     }
 
     public final void cvtsd2siq(Register dst, Register src) {
-        SSEOp.CVTSD2SI.emit(this, OperandSize.QWORD, dst, src);
+        simdOp(SSEOp.CVTSD2SI, OperandSize.QWORD, VexRMOp.VCVTSD2SQ, AVXSize.XMM, dst, src);
     }
 
     public final void cvtsi2sdl(Register dst, Register src) {
-        SSEOp.CVTSI2SD.emit(this, OperandSize.DWORD, dst, src);
+        simdOp(SSEOp.CVTSI2SD, OperandSize.DWORD, VexRVMConvertOp.VCVTSI2SD, AVXSize.XMM, dst, src);
     }
 
     public final void cvtsi2sdq(Register dst, Register src) {
-        SSEOp.CVTSI2SD.emit(this, OperandSize.QWORD, dst, src);
+        simdOp(SSEOp.CVTSI2SD, OperandSize.QWORD, VexRVMConvertOp.VCVTSQ2SD, AVXSize.XMM, dst, src);
     }
 
     public final void cvttpd2dq(Register dst, Register src) {
-        SSEOp.CVTTPD2DQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.CVTTPD2DQ, OperandSize.PD, VexRMOp.VCVTTPD2DQ, AVXSize.XMM, dst, src);
     }
 
     public final void cvttsd2sil(Register dst, Register src) {
-        SSEOp.CVTTSD2SI.emit(this, OperandSize.DWORD, dst, src);
+        simdOp(SSEOp.CVTTSD2SI, OperandSize.DWORD, VexRMOp.VCVTTSD2SI, AVXSize.XMM, dst, src);
     }
 
     public final void cvttsd2siq(Register dst, Register src) {
-        SSEOp.CVTTSD2SI.emit(this, OperandSize.QWORD, dst, src);
+        simdOp(SSEOp.CVTTSD2SI, OperandSize.QWORD, VexRMOp.VCVTTSD2SQ, AVXSize.XMM, dst, src);
     }
 
     public final void cvttss2sil(Register dst, Register src) {
-        SSEOp.CVTTSS2SI.emit(this, OperandSize.DWORD, dst, src);
+        simdOp(SSEOp.CVTTSS2SI, OperandSize.DWORD, VexRMOp.VCVTTSS2SI, AVXSize.XMM, dst, src);
     }
 
     public final void decl(AMD64Address dst) {
@@ -4974,12 +5178,12 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void divsd(Register dst, Register src) {
-        SSEOp.DIV.emit(this, OperandSize.SD, dst, src);
+        simdOp(SSEOp.DIV, OperandSize.SD, VexRVMOp.VDIVSD, AVXSize.XMM, dst, src);
     }
 
     public final void gf2p8affineqb(Register dst, Register src, int imm8) {
         if (supports(CPUFeature.AVX)) {
-            VexRVMIOp.VGF2P8AFFINEQB.emit(this, AVXSize.XMM, dst, dst, src, imm8);
+            VexRVMIOp.VGF2P8AFFINEQB.encoding(avxEncoding).emit(this, AVXSize.XMM, dst, dst, src, imm8);
         } else {
             SSERMIOp.GF2P8AFFINEQB.emit(this, OperandSize.PD, dst, src, imm8);
         }
@@ -5020,12 +5224,16 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         AMD64MOp.INC.emit(this, OperandSize.QWORD, dst);
     }
 
+    public final void movapd(Register dst, AMD64Address src) {
+        simdMoveOp(SSEOp.MOVAPD, OperandSize.PD, VexMoveOp.VMOVAPD, AVXSize.XMM, dst, src);
+    }
+
     public final void movapd(Register dst, Register src) {
-        SSEOp.MOVAPD.emit(this, OperandSize.PD, dst, src);
+        simdMoveOp(SSEOp.MOVAPD, OperandSize.PD, VexMoveOp.VMOVAPD, AVXSize.XMM, dst, src);
     }
 
     public final void movaps(Register dst, Register src) {
-        SSEOp.MOVAPS.emit(this, OperandSize.PS, dst, src);
+        simdMoveOp(SSEOp.MOVAPS, OperandSize.PS, VexMoveOp.VMOVAPS, AVXSize.XMM, dst, src);
     }
 
     public final void movb(Register dst, AMD64Address src) {
@@ -5041,55 +5249,55 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void movddup(Register dst, Register src) {
-        SSEOp.MOVDDUP.emit(this, OperandSize.SD, dst, src);
+        simdOp(SSEOp.MOVDDUP, OperandSize.SD, VexRMOp.VMOVDDUP, AVXSize.XMM, dst, src);
     }
 
     public final void movdl(Register dst, Register src) {
         if (inRC(XMM, dst) && inRC(CPU, src)) {
-            SSEOp.MOVD.emit(this, OperandSize.DWORD, dst, src);
+            simdMoveOp(SSEOp.MOVD, OperandSize.DWORD, VexMoveOp.VMOVD, AVXSize.XMM, dst, src);
         } else if (inRC(XMM, src) && inRC(CPU, dst)) {
-            SSEMROp.MOVD.emit(this, OperandSize.DWORD, dst, src);
+            simdMoveOp(SSEMROp.MOVD, OperandSize.DWORD, VexMoveOp.VMOVD, AVXSize.XMM, dst, src);
         } else {
             throw new InternalError("should not reach here");
         }
     }
 
     public final void movdl(Register dst, AMD64Address src) {
-        SSEOp.MOVD.emit(this, OperandSize.DWORD, dst, src);
+        simdMoveOp(SSEOp.MOVD, OperandSize.DWORD, VexMoveOp.VMOVD, AVXSize.XMM, dst, src);
     }
 
     public final void movdq(Register dst, AMD64Address src) {
-        SSEOp.MOVQ.emit(this, OperandSize.QWORD, dst, src);
+        simdMoveOp(SSEOp.MOVQ, OperandSize.QWORD, VexMoveOp.VMOVQ, AVXSize.XMM, dst, src);
     }
 
     public final void movdq(AMD64Address dst, Register src) {
-        SSEMROp.MOVQ.emit(this, OperandSize.QWORD, dst, src);
+        simdMoveOp(SSEMROp.MOVQ, OperandSize.QWORD, VexMoveOp.VMOVQ, AVXSize.XMM, dst, src);
     }
 
     public final void movdq(Register dst, Register src) {
         if (inRC(XMM, dst) && inRC(CPU, src)) {
-            SSEOp.MOVQ.emit(this, OperandSize.QWORD, dst, src);
+            simdMoveOp(SSEOp.MOVQ, OperandSize.QWORD, VexMoveOp.VMOVQ, AVXSize.XMM, dst, src);
         } else if (inRC(XMM, src) && inRC(CPU, dst)) {
-            SSEMROp.MOVQ.emit(this, OperandSize.QWORD, dst, src);
+            simdMoveOp(SSEMROp.MOVQ, OperandSize.QWORD, VexMoveOp.VMOVQ, AVXSize.XMM, dst, src);
         } else {
             throw new InternalError("should not reach here");
         }
     }
 
     public final void movdqa(Register dst, Register src) {
-        SSEOp.MOVDQA.emit(this, OperandSize.PD, dst, src);
+        simdMoveOp(SSEOp.MOVDQA, OperandSize.PD, VexMoveOp.VMOVDQA64, AVXSize.XMM, dst, src);
     }
 
     public final void movdqu(Register dst, AMD64Address src) {
-        SSEOp.MOVDQU.emit(this, OperandSize.SS, dst, src);
+        simdMoveOp(SSEOp.MOVDQU, OperandSize.SS, VexMoveOp.VMOVDQU32, AVXSize.XMM, dst, src);
     }
 
     public final void movdqu(Register dst, Register src) {
-        SSEOp.MOVDQU.emit(this, OperandSize.SS, dst, src);
+        simdMoveOp(SSEOp.MOVDQU, OperandSize.SS, VexMoveOp.VMOVDQU32, AVXSize.XMM, dst, src);
     }
 
     public final void movdqu(AMD64Address dst, Register src) {
-        SSEMROp.MOVDQU.emit(this, OperandSize.SS, dst, src);
+        simdMoveOp(SSEMROp.MOVDQU, OperandSize.SS, VexMoveOp.VMOVDQU32, AVXSize.XMM, dst, src);
     }
 
     public final void movl(Register dst, Register src) {
@@ -5132,15 +5340,15 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void movsd(Register dst, Register src) {
-        SSEOp.MOVSD.emit(this, OperandSize.SD, dst, src);
+        simdMoveOp(SSEOp.MOVSD, OperandSize.SD, VexMoveOp.VMOVSD, AVXSize.XMM, dst, src);
     }
 
     public final void movsd(Register dst, AMD64Address src) {
-        SSEOp.MOVSD.emit(this, OperandSize.SD, dst, src);
+        simdMoveOp(SSEOp.MOVSD, OperandSize.SD, VexMoveOp.VMOVSD, AVXSize.XMM, dst, src);
     }
 
     public final void movsd(AMD64Address dst, Register src) {
-        SSEMROp.MOVSD.emit(this, OperandSize.SD, dst, src);
+        simdMoveOp(SSEMROp.MOVSD, OperandSize.SD, VexMoveOp.VMOVSD, AVXSize.XMM, dst, src);
     }
 
     public final void movslq(Register dst, int imm32) {
@@ -5160,15 +5368,15 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void movss(Register dst, Register src) {
-        SSEOp.MOVSS.emit(this, OperandSize.SS, dst, src);
+        simdMoveOp(SSEOp.MOVSS, OperandSize.SS, VexMoveOp.VMOVSS, AVXSize.XMM, dst, src);
     }
 
     public final void movss(Register dst, AMD64Address src) {
-        SSEOp.MOVSS.emit(this, OperandSize.SS, dst, src);
+        simdMoveOp(SSEOp.MOVSS, OperandSize.SS, VexMoveOp.VMOVSS, AVXSize.XMM, dst, src);
     }
 
     public final void movss(AMD64Address dst, Register src) {
-        SSEMROp.MOVSS.emit(this, OperandSize.SS, dst, src);
+        simdMoveOp(SSEMROp.MOVSS, OperandSize.SS, VexMoveOp.VMOVSS, AVXSize.XMM, dst, src);
     }
 
     public final void movswl(Register dst, Register src) {
@@ -5224,11 +5432,11 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void mulpd(Register dst, Register src) {
-        SSEOp.MUL.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.MUL, OperandSize.PD, VexRVMOp.VMULPD, AVXSize.XMM, dst, src);
     }
 
     public final void mulpd(Register dst, AMD64Address src) {
-        SSEOp.MUL.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.MUL, OperandSize.PD, VexRVMOp.VMULPD, AVXSize.XMM, dst, src);
     }
 
     public final void mulq(Register src) {
@@ -5236,15 +5444,15 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void mulsd(Register dst, Register src) {
-        SSEOp.MUL.emit(this, OperandSize.SD, dst, src);
+        simdOp(SSEOp.MUL, OperandSize.SD, VexRVMOp.VMULSD, AVXSize.XMM, dst, src);
     }
 
     public final void mulsd(Register dst, AMD64Address src) {
-        SSEOp.MUL.emit(this, OperandSize.SD, dst, src);
+        simdOp(SSEOp.MUL, OperandSize.SD, VexRVMOp.VMULSD, AVXSize.XMM, dst, src);
     }
 
     public final void mulss(Register dst, Register src) {
-        SSEOp.MUL.emit(this, OperandSize.SS, dst, src);
+        simdOp(SSEOp.MUL, OperandSize.SS, VexRVMOp.VMULSS, AVXSize.XMM, dst, src);
     }
 
     public final void mulxq(Register dst1, Register dst2, Register src) {
@@ -5283,6 +5491,10 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         AMD64BinaryArithmetic.OR.getMIOpcode(OperandSize.DWORD, isByte(imm32)).emit(this, OperandSize.DWORD, dst, imm32);
     }
 
+    public final void orpd(Register dst, Register src) {
+        simdOp(SSEOp.OR, OperandSize.PD, VexRVMOp.VORPD, AVXSize.XMM, dst, src);
+    }
+
     public final void orq(Register dst, Register src) {
         AMD64BinaryArithmetic.OR.rmOp.emit(this, OperandSize.QWORD, dst, src);
     }
@@ -5300,239 +5512,244 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void packusdw(Register dst, Register src) {
-        SSEOp.PACKUSDW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PACKUSDW, OperandSize.PD, VexRVMOp.VPACKUSDW, AVXSize.XMM, dst, src);
     }
 
     public final void packuswb(Register dst, Register src) {
-        SSEOp.PACKUSWB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PACKUSWB, OperandSize.PD, VexRVMOp.VPACKUSWB, AVXSize.XMM, dst, src);
     }
 
     public final void paddd(Register dst, Register src) {
-        SSEOp.PADDD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PADDD, OperandSize.PD, VexRVMOp.VPADDD, AVXSize.XMM, dst, src);
     }
 
     public final void paddd(Register dst, AMD64Address src) {
-        SSEOp.PADDD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PADDD, OperandSize.PD, VexRVMOp.VPADDD, AVXSize.XMM, dst, src);
     }
 
     public final void paddq(Register dst, Register src) {
-        SSEOp.PADDQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PADDQ, OperandSize.PD, VexRVMOp.VPADDQ, AVXSize.XMM, dst, src);
     }
 
     public final void palignr(Register dst, Register src, int imm8) {
-        SSERMIOp.PALIGNR.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSERMIOp.PALIGNR, OperandSize.PD, VexRVMIOp.VPALIGNR, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pand(Register dst, Register src) {
-        SSEOp.PAND.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PAND, OperandSize.PD, VexRVMOp.VPAND, AVXSize.XMM, dst, src);
     }
 
     public final void pand(Register dst, AMD64Address src) {
-        SSEOp.PAND.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PAND, OperandSize.PD, VexRVMOp.VPAND, AVXSize.XMM, dst, src);
     }
 
     public final void pandn(Register dst, Register src) {
-        SSEOp.PANDN.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PANDN, OperandSize.PD, VexRVMOp.VPANDN, AVXSize.XMM, dst, src);
     }
 
     public final void pblendw(Register dst, Register src, int imm8) {
+        guaranteeNotAVX512Register("pblendw", dst, VexRMIOp.VPBLENDW);
+        guaranteeNotAVX512Register("pblendw", src, VexRMIOp.VPBLENDW);
         SSERMIOp.PBLENDW.emit(this, OperandSize.PD, dst, src, imm8);
     }
 
     public final void pclmulqdq(Register dst, Register src, int imm8) {
-        SSERMIOp.PCLMULQDQ.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSERMIOp.PCLMULQDQ, OperandSize.PD, VexRVMIOp.VPCLMULQDQ, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pcmpeqb(Register dst, Register src) {
-        SSEOp.PCMPEQB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PCMPEQB, OperandSize.PD, VexRVMOp.VPCMPEQB, AVXSize.XMM, dst, src);
     }
 
     public final void pcmpeqb(Register dst, AMD64Address src) {
-        SSEOp.PCMPEQB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PCMPEQB, OperandSize.PD, VexRVMOp.VPCMPEQB, AVXSize.XMM, dst, src);
     }
 
     public final void pcmpeqd(Register dst, Register src) {
-        SSEOp.PCMPEQD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PCMPEQD, OperandSize.PD, VexRVMOp.VPCMPEQD, AVXSize.XMM, dst, src);
     }
 
     public final void pcmpeqd(Register dst, AMD64Address src) {
-        SSEOp.PCMPEQD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PCMPEQD, OperandSize.PD, VexRVMOp.VPCMPEQD, AVXSize.XMM, dst, src);
     }
 
     public final void pcmpeqw(Register dst, Register src) {
-        SSEOp.PCMPEQW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PCMPEQW, OperandSize.PD, VexRVMOp.VPCMPEQW, AVXSize.XMM, dst, src);
     }
 
     public final void pcmpeqw(Register dst, AMD64Address src) {
-        SSEOp.PCMPEQW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PCMPEQW, OperandSize.PD, VexRVMOp.VPCMPEQW, AVXSize.XMM, dst, src);
     }
 
     public final void pcmpestri(Register dst, AMD64Address src, int imm8) {
-        SSERMIOp.PCMPESTRI.emit(this, OperandSize.PD, dst, src, imm8);
+        guaranteeNotAVX512Register("pcmpestri", dst, VexRMIOp.VPCMPESTRI);
+        simdOp(SSERMIOp.PCMPESTRI, OperandSize.PD, VexRMIOp.VPCMPESTRI, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pcmpestri(Register dst, Register src, int imm8) {
-        SSERMIOp.PCMPESTRI.emit(this, OperandSize.PD, dst, src, imm8);
+        guaranteeNotAVX512Register("pcmpestri", dst, VexRMIOp.VPCMPESTRI);
+        guaranteeNotAVX512Register("pcmpestri", src, VexRMIOp.VPCMPESTRI);
+        simdOp(SSERMIOp.PCMPESTRI, OperandSize.PD, VexRMIOp.VPCMPESTRI, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pcmpgtb(Register dst, Register src) {
-        SSEOp.PCMPGTB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PCMPGTB, OperandSize.PD, VexRVMOp.VPCMPGTB, AVXSize.XMM, dst, src);
     }
 
     public final void pcmpgtd(Register dst, Register src) {
-        SSEOp.PCMPGTD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PCMPGTD, OperandSize.PD, VexRVMOp.VPCMPGTD, AVXSize.XMM, dst, src);
     }
 
     public final void pextrb(AMD64Address dst, Register src, int imm8) {
-        SSEMRIOp.PEXTRB.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSEMRIOp.PEXTRB, OperandSize.PD, VexMRIOp.VPEXTRB, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pextrd(AMD64Address dst, Register src, int imm8) {
-        SSEMRIOp.PEXTRD.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSEMRIOp.PEXTRD, OperandSize.PD, VexMRIOp.VPEXTRD, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pextrq(Register dst, Register src, int imm8) {
-        SSEMRIOp.PEXTRQ.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSEMRIOp.PEXTRQ, OperandSize.PD, VexMRIOp.VPEXTRQ, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pextrq(AMD64Address dst, Register src, int imm8) {
-        SSEMRIOp.PEXTRQ.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSEMRIOp.PEXTRQ, OperandSize.PD, VexMRIOp.VPEXTRQ, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pextrw(AMD64Address dst, Register src, int imm8) {
-        SSEMRIOp.PEXTRW.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSEMRIOp.PEXTRW, OperandSize.PD, VexMRIOp.VPEXTRW, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pinsrb(Register dst, AMD64Address src, int imm8) {
-        SSERMIOp.PINSRB.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSERMIOp.PINSRB, OperandSize.PD, VexRVMIOp.VPINSRB, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pinsrd(Register dst, AMD64Address src, int imm8) {
-        SSERMIOp.PINSRD.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSERMIOp.PINSRD, OperandSize.PD, VexRVMIOp.VPINSRD, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pinsrq(Register dst, Register src, int imm8) {
-        SSERMIOp.PINSRQ.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSERMIOp.PINSRQ, OperandSize.PD, VexRVMIOp.VPINSRQ, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pinsrq(Register dst, AMD64Address src, int imm8) {
-        SSERMIOp.PINSRQ.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSERMIOp.PINSRQ, OperandSize.PD, VexRVMIOp.VPINSRQ, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pinsrw(Register dst, Register src, int imm8) {
-        SSERMIOp.PINSRW.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSERMIOp.PINSRW, OperandSize.PD, VexRVMIOp.VPINSRW, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pinsrw(Register dst, AMD64Address src, int imm8) {
-        SSERMIOp.PINSRW.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSERMIOp.PINSRW, OperandSize.PD, VexRVMIOp.VPINSRW, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pminub(Register dst, Register src) {
-        SSEOp.PMINUB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMINUB, OperandSize.PD, VexRVMOp.VPMINUB, AVXSize.XMM, dst, src);
     }
 
     public final void pminud(Register dst, Register src) {
-        SSEOp.PMINUD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMINUD, OperandSize.PD, VexRVMOp.VPMINUD, AVXSize.XMM, dst, src);
     }
 
     public final void pminuw(Register dst, Register src) {
-        SSEOp.PMINUW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMINUW, OperandSize.PD, VexRVMOp.VPMINUW, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxbd(Register dst, AMD64Address src) {
-        SSEOp.PMOVSXBD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXBD, OperandSize.PD, VexRMOp.VPMOVSXBD, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxbd(Register dst, Register src) {
-        SSEOp.PMOVSXBD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXBD, OperandSize.PD, VexRMOp.VPMOVSXBD, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxbq(Register dst, AMD64Address src) {
-        SSEOp.PMOVSXBQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXBQ, OperandSize.PD, VexRMOp.VPMOVSXBQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxbq(Register dst, Register src) {
-        SSEOp.PMOVSXBQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXBQ, OperandSize.PD, VexRMOp.VPMOVSXBQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxbw(Register dst, AMD64Address src) {
-        SSEOp.PMOVSXBW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXBW, OperandSize.PD, VexRMOp.VPMOVSXBW, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxbw(Register dst, Register src) {
-        SSEOp.PMOVSXBW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXBW, OperandSize.PD, VexRMOp.VPMOVSXBW, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxdq(Register dst, AMD64Address src) {
-        SSEOp.PMOVSXDQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXDQ, OperandSize.PD, VexRMOp.VPMOVSXDQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxdq(Register dst, Register src) {
-        SSEOp.PMOVSXDQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXDQ, OperandSize.PD, VexRMOp.VPMOVSXDQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxwd(Register dst, AMD64Address src) {
-        SSEOp.PMOVSXWD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXWD, OperandSize.PD, VexRMOp.VPMOVSXWD, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxwd(Register dst, Register src) {
-        SSEOp.PMOVSXWD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXWD, OperandSize.PD, VexRMOp.VPMOVSXWD, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxwq(Register dst, AMD64Address src) {
-        SSEOp.PMOVSXWQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXWQ, OperandSize.PD, VexRMOp.VPMOVSXWQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovsxwq(Register dst, Register src) {
-        SSEOp.PMOVSXWQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVSXWQ, OperandSize.PD, VexRMOp.VPMOVSXWQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxbd(Register dst, AMD64Address src) {
-        SSEOp.PMOVZXBD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXBD, OperandSize.PD, VexRMOp.VPMOVZXBD, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxbd(Register dst, Register src) {
-        SSEOp.PMOVZXBD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXBD, OperandSize.PD, VexRMOp.VPMOVZXBD, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxbq(Register dst, AMD64Address src) {
-        SSEOp.PMOVZXBQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXBQ, OperandSize.PD, VexRMOp.VPMOVZXBQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxbq(Register dst, Register src) {
-        SSEOp.PMOVZXBQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXBQ, OperandSize.PD, VexRMOp.VPMOVZXBQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxbw(Register dst, AMD64Address src) {
-        SSEOp.PMOVZXBW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXBW, OperandSize.PD, VexRMOp.VPMOVZXBW, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxbw(Register dst, Register src) {
-        SSEOp.PMOVZXBW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXBW, OperandSize.PD, VexRMOp.VPMOVZXBW, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxdq(Register dst, AMD64Address src) {
-        SSEOp.PMOVZXDQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXDQ, OperandSize.PD, VexRMOp.VPMOVZXDQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxdq(Register dst, Register src) {
-        SSEOp.PMOVZXDQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXDQ, OperandSize.PD, VexRMOp.VPMOVZXDQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxwd(Register dst, AMD64Address src) {
-        SSEOp.PMOVZXWD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXWD, OperandSize.PD, VexRMOp.VPMOVZXWD, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxwd(Register dst, Register src) {
-        SSEOp.PMOVZXWD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXWD, OperandSize.PD, VexRMOp.VPMOVZXWD, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxwq(Register dst, AMD64Address src) {
-        SSEOp.PMOVZXWQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXWQ, OperandSize.PD, VexRMOp.VPMOVZXWQ, AVXSize.XMM, dst, src);
     }
 
     public final void pmovzxwq(Register dst, Register src) {
-        SSEOp.PMOVZXWQ.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PMOVZXWQ, OperandSize.PD, VexRMOp.VPMOVZXWQ, AVXSize.XMM, dst, src);
     }
 
     public final void popcntl(Register dst, Register src) {
@@ -5540,110 +5757,113 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void por(Register dst, Register src) {
-        SSEOp.POR.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.POR, OperandSize.PD, VexRVMOp.VPOR, AVXSize.XMM, dst, src);
     }
 
     public final void pshufb(Register dst, Register src) {
-        SSEOp.PSHUFB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PSHUFB, OperandSize.PD, VexRVMOp.VPSHUFB, AVXSize.XMM, dst, src);
     }
 
     public final void pshufb(Register dst, AMD64Address src) {
-        SSEOp.PSHUFB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PSHUFB, OperandSize.PD, VexRVMOp.VPSHUFB, AVXSize.XMM, dst, src);
     }
 
     public final void pshufd(Register dst, Register src, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERMIOp.PSHUFD.emit(this, OperandSize.PD, dst, src, imm8);
+        simdOp(SSERMIOp.PSHUFD, OperandSize.PD, VexRMIOp.VPSHUFD, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pshuflw(Register dst, Register src, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERMIOp.PSHUFLW.emit(this, OperandSize.SD, dst, src, imm8);
+        simdOp(SSERMIOp.PSHUFLW, OperandSize.SD, VexRMIOp.VPSHUFLW, AVXSize.XMM, dst, src, imm8);
     }
 
     public final void pslld(Register dst, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERIOp.PSLLD.emit(this, OperandSize.PD, dst, imm8);
+        simdOp(SSERIOp.PSLLD, OperandSize.PD, VexShiftOp.VPSLLD, AVXSize.XMM, dst, dst, imm8);
     }
 
     public final void pslldq(Register dst, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERIOp.PSLLDQ.emit(this, OperandSize.PD, dst, imm8);
+        simdOp(SSERIOp.PSLLDQ, OperandSize.PD, VexShiftImmOp.VPSLLDQ, AVXSize.XMM, dst, dst, imm8);
     }
 
     public final void psllq(Register dst, Register shift) {
-        SSEOp.PSLLQ.emit(this, OperandSize.PD, dst, shift);
+        simdOp(SSEOp.PSLLQ, OperandSize.PD, VexShiftOp.VPSLLQ, AVXSize.XMM, dst, shift);
     }
 
     public final void psllq(Register dst, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERIOp.PSLLQ.emit(this, OperandSize.PD, dst, imm8);
+        simdOp(SSERIOp.PSLLQ, OperandSize.PD, VexShiftOp.VPSLLQ, AVXSize.XMM, dst, dst, imm8);
     }
 
     public final void psllw(Register dst, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERIOp.PSLLW.emit(this, OperandSize.PD, dst, imm8);
+        simdOp(SSERIOp.PSLLW, OperandSize.PD, VexShiftOp.VPSLLW, AVXSize.XMM, dst, dst, imm8);
     }
 
     public final void psrad(Register dst, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERIOp.PSRAD.emit(this, OperandSize.PD, dst, imm8);
+        simdOp(SSERIOp.PSRAD, OperandSize.PD, VexShiftOp.VPSRAD, AVXSize.XMM, dst, dst, imm8);
     }
 
     public final void psrld(Register dst, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERIOp.PSRLD.emit(this, OperandSize.PD, dst, imm8);
+        simdOp(SSERIOp.PSRLD, OperandSize.PD, VexShiftOp.VPSRLD, AVXSize.XMM, dst, dst, imm8);
     }
 
     public final void psrldq(Register dst, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERIOp.PSRLDQ.emit(this, OperandSize.PD, dst, imm8);
+        simdOp(SSERIOp.PSRLDQ, OperandSize.PD, VexShiftImmOp.VPSRLDQ, AVXSize.XMM, dst, dst, imm8);
     }
 
     public final void psrlq(Register dst, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERIOp.PSRLQ.emit(this, OperandSize.PD, dst, imm8);
+        simdOp(SSERIOp.PSRLQ, OperandSize.PD, VexShiftOp.VPSRLQ, AVXSize.XMM, dst, dst, imm8);
     }
 
     public final void psrlw(Register dst, int imm8) {
         GraalError.guarantee(isUByte(imm8), "invalid value");
-        SSERIOp.PSRLW.emit(this, OperandSize.PD, dst, imm8);
+        simdOp(SSERIOp.PSRLW, OperandSize.PD, VexShiftOp.VPSRLW, AVXSize.XMM, dst, dst, imm8);
     }
 
     public final void psubd(Register dst, Register src) {
-        SSEOp.PSUBD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PSUBD, OperandSize.PD, VexRVMOp.VPSUBD, AVXSize.XMM, dst, src);
     }
 
     public final void psubusb(Register dst, Register src) {
-        SSEOp.PSUBUSB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PSUBUSB, OperandSize.PD, VexRVMOp.VPSUBUSB, AVXSize.XMM, dst, src);
     }
 
     public final void psubusb(Register dst, AMD64Address src) {
-        SSEOp.PSUBUSB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PSUBUSB, OperandSize.PD, VexRVMOp.VPSUBUSB, AVXSize.XMM, dst, src);
     }
 
     public final void psubusw(Register dst, Register src) {
-        SSEOp.PSUBUSW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PSUBUSW, OperandSize.PD, VexRVMOp.VPSUBUSW, AVXSize.XMM, dst, src);
     }
 
     public final void psubusw(Register dst, AMD64Address src) {
-        SSEOp.PSUBUSW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PSUBUSW, OperandSize.PD, VexRVMOp.VPSUBUSW, AVXSize.XMM, dst, src);
     }
 
     public final void ptest(Register dst, Register src) {
-        SSEOp.PTEST.emit(this, OperandSize.PD, dst, src);
+        guaranteeNotAVX512Register("ptest", dst, VexRMOp.VPTEST);
+        guaranteeNotAVX512Register("ptest", src, VexRMOp.VPTEST);
+        simdOp(SSEOp.PTEST, OperandSize.PD, VexRMOp.VPTEST, AVXSize.XMM, dst, src);
     }
 
     public final void ptest(Register dst, AMD64Address src) {
-        SSEOp.PTEST.emit(this, OperandSize.PD, dst, src);
+        guaranteeNotAVX512Register("ptest", dst, VexRMOp.VPTEST);
+        simdOp(SSEOp.PTEST, OperandSize.PD, VexRMOp.VPTEST, AVXSize.XMM, dst, src);
     }
 
     public final void punpcklbw(Register dst, Register src) {
-        SSEOp.PUNPCKLBW.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PUNPCKLBW, OperandSize.PD, VexRVMOp.VPUNPCKLBW, AVXSize.XMM, dst, src);
     }
 
     public final void pxor(Register dst, Register src) {
-        SSEOp.PXOR.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.PXOR, OperandSize.PD, VexRVMOp.VPXOR, AVXSize.XMM, dst, src);
     }
 
     public final void rclq(Register dst, int imm8) {
@@ -5652,7 +5872,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void rcpps(Register dst, Register src) {
-        SSEOp.RCPPS.emit(this, OperandSize.PS, dst, src);
+        simdOp(SSEOp.RCPPS, OperandSize.PS, VexRMOp.VRCPPS, VexRMOp.EVRCP14PS, AVXSize.XMM, dst, src);
     }
 
     public final void rcrq(Register dst, int imm8) {
@@ -5663,6 +5883,16 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     public final void roll(Register dst, int imm8) {
         GraalError.guarantee(isByte(imm8), "only byte immediate is supported");
         AMD64Shift.ROL.miOp.emit(this, OperandSize.DWORD, dst, (byte) imm8);
+    }
+
+    public final void rorw(Register dst, int imm8) {
+        GraalError.guarantee(isByte(imm8), "only byte immediate is supported");
+        AMD64Shift.ROR.miOp.emit(this, OperandSize.WORD, dst, (byte) imm8);
+    }
+
+    public final void rorl(Register dst, int imm8) {
+        GraalError.guarantee(isByte(imm8), "only byte immediate is supported");
+        AMD64Shift.ROR.miOp.emit(this, OperandSize.DWORD, dst, (byte) imm8);
     }
 
     public final void rorq(Register dst, int imm8) {
@@ -5796,7 +6026,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void sqrtsd(Register dst, Register src) {
-        SSEOp.SQRT.emit(this, OperandSize.SD, dst, src);
+        simdOp(SSEOp.SQRT, OperandSize.SD, VexRVMOp.VSQRTSD, AVXSize.XMM, dst, src);
     }
 
     public final void subl(AMD64Address dst, int imm32) {
@@ -5812,7 +6042,7 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void subpd(Register dst, Register src) {
-        SSEOp.SUB.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.SUB, OperandSize.PD, VexRVMOp.VSUBPD, AVXSize.XMM, dst, src);
     }
 
     public final void subq(Register dst, int imm32) {
@@ -5833,11 +6063,19 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void subsd(Register dst, Register src) {
-        SSEOp.SUB.emit(this, OperandSize.SD, dst, src);
+        simdOp(SSEOp.SUB, OperandSize.SD, VexRVMOp.VSUBSD, AVXSize.XMM, dst, src);
     }
 
     public final void subsd(Register dst, AMD64Address src) {
-        SSEOp.SUB.emit(this, OperandSize.SD, dst, src);
+        simdOp(SSEOp.SUB, OperandSize.SD, VexRVMOp.VSUBSD, AVXSize.XMM, dst, src);
+    }
+
+    public final void subss(Register dst, Register src) {
+        simdOp(SSEOp.SUB, OperandSize.SS, VexRVMOp.VSUBSS, AVXSize.XMM, dst, src);
+    }
+
+    public final void subss(Register dst, AMD64Address src) {
+        simdOp(SSEOp.SUB, OperandSize.SS, VexRVMOp.VSUBSS, AVXSize.XMM, dst, src);
     }
 
     public final void testl(Register dst, Register src) {
@@ -5861,19 +6099,23 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
     }
 
     public final void ucomisd(Register dst, Register src) {
-        SSEOp.UCOMIS.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.UCOMIS, OperandSize.PD, VexRMOp.VUCOMISD, AVXSize.XMM, dst, src);
+    }
+
+    public final void ucomisd(Register dst, AMD64Address src) {
+        simdOp(SSEOp.UCOMIS, OperandSize.PD, VexRMOp.VUCOMISD, AVXSize.XMM, dst, src);
     }
 
     public final void ucomiss(Register dst, Register src) {
-        SSEOp.UCOMIS.emit(this, OperandSize.PS, dst, src);
+        simdOp(SSEOp.UCOMIS, OperandSize.PS, VexRMOp.VUCOMISS, AVXSize.XMM, dst, src);
     }
 
     public final void unpckhpd(Register dst, Register src) {
-        SSEOp.UNPCKHPD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.UNPCKHPD, OperandSize.PD, VexRVMOp.VUNPCKHPD, AVXSize.XMM, dst, src);
     }
 
     public final void unpcklpd(Register dst, Register src) {
-        SSEOp.UNPCKLPD.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.UNPCKLPD, OperandSize.PD, VexRVMOp.VUNPCKLPD, AVXSize.XMM, dst, src);
     }
 
     public final void vcvtph2ps(Register dst, Register src) {
@@ -6080,12 +6322,16 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         AMD64BinaryArithmetic.XOR.rmOp.emit(this, OperandSize.DWORD, dst, src);
     }
 
+    public final void xorl(Register dst, AMD64Address src) {
+        AMD64BinaryArithmetic.XOR.rmOp.emit(this, OperandSize.DWORD, dst, src);
+    }
+
     public final void xorl(Register dst, int imm32) {
         AMD64BinaryArithmetic.XOR.getMIOpcode(OperandSize.DWORD, isByte(imm32)).emit(this, OperandSize.DWORD, dst, imm32);
     }
 
     public final void xorpd(Register dst, Register src) {
-        SSEOp.XOR.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.XOR, OperandSize.PD, VexRVMOp.VXORPD, AVXSize.XMM, dst, src);
     }
 
     /**
@@ -6093,11 +6339,11 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
      * E.g., constants stored into the data section should be aligned to 16 bytes.
      */
     public final void xorpd(Register dst, AMD64Address src) {
-        SSEOp.XOR.emit(this, OperandSize.PD, dst, src);
+        simdOp(SSEOp.XOR, OperandSize.PD, VexRVMOp.VXORPD, AVXSize.XMM, dst, src);
     }
 
     public final void xorps(Register dst, Register src) {
-        SSEOp.XOR.emit(this, OperandSize.PS, dst, src);
+        simdOp(SSEOp.XOR, OperandSize.PS, VexRVMOp.VXORPS, AVXSize.XMM, dst, src);
     }
 
     /**
@@ -6105,10 +6351,14 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
      * E.g., constants stored into the data section should be aligned to 16 bytes.
      */
     public final void xorps(Register dst, AMD64Address src) {
-        SSEOp.XOR.emit(this, OperandSize.PS, dst, src);
+        simdOp(SSEOp.XOR, OperandSize.PS, VexRVMOp.VXORPS, AVXSize.XMM, dst, src);
     }
 
     public final void xorq(Register dst, Register src) {
+        AMD64BinaryArithmetic.XOR.rmOp.emit(this, OperandSize.QWORD, dst, src);
+    }
+
+    public final void xorq(Register dst, AMD64Address src) {
         AMD64BinaryArithmetic.XOR.rmOp.emit(this, OperandSize.QWORD, dst, src);
     }
 
@@ -6174,6 +6424,14 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
 
     public final void kshiftrw(Register dst, Register src, int imm8) {
         VexMaskRRIOp.KSHIFTRW.emit(this, AVXSize.XMM, dst, src, imm8);
+    }
+
+    public final void ktestb(Register src1, Register src2) {
+        VexRROp.KTESTB.emit(this, AVXSize.XMM, src1, src2);
+    }
+
+    public final void ktestw(Register src1, Register src2) {
+        VexRROp.KTESTW.emit(this, AVXSize.XMM, src1, src2);
     }
 
     public final void ktestd(Register src1, Register src2) {
@@ -6312,4 +6570,153 @@ public class AMD64Assembler extends AMD64BaseAssembler implements MemoryReadInte
         VexRVMOp.EVPXORQ.emit(this, AVXSize.ZMM, dst, nds, src, mask);
     }
 
+    private void simdOp(SSEOp sseOp, OperandSize operandSize, VexRVMOp avxOp, AVXSize avxSize, Register dst, Register src) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, dst, src);
+        } else {
+            sseOp.emit(this, operandSize, dst, src);
+        }
+    }
+
+    private void simdOp(SSEOp sseOp, OperandSize operandSize, VexRVMOp avxOp, AVXSize avxSize, Register dst, AMD64Address src) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, dst, src);
+        } else {
+            sseOp.emit(this, operandSize, dst, src);
+        }
+    }
+
+    private void simdOp(SSERMIOp sseOp, OperandSize operandSize, VexRVMIOp avxOp, AVXSize avxSize, Register dst, Register src, int imm8) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, dst, src, imm8);
+        } else {
+            sseOp.emit(this, operandSize, dst, src, imm8);
+        }
+    }
+
+    private void simdOp(SSERMIOp sseOp, OperandSize operandSize, VexRVMIOp avxOp, AVXSize avxSize, Register dst, AMD64Address src, int imm8) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, dst, src, imm8);
+        } else {
+            sseOp.emit(this, operandSize, dst, src, imm8);
+        }
+    }
+
+    private void simdOp(SSERMIOp sseOp, OperandSize operandSize, VexRMIOp avxOp, AVXSize avxSize, Register dst, Register src, int imm8) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, src, imm8);
+        } else {
+            sseOp.emit(this, operandSize, dst, src, imm8);
+        }
+    }
+
+    private void simdOp(SSERMIOp sseOp, OperandSize operandSize, VexRMIOp avxOp, AVXSize avxSize, Register dst, AMD64Address src, int imm8) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, src, imm8);
+        } else {
+            sseOp.emit(this, operandSize, dst, src, imm8);
+        }
+    }
+
+    private void simdOp(SSERIOp sseOp, OperandSize operandSize, VexShiftOp avxOp, AVXSize avxSize, Register dst, Register src, int imm8) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, src, imm8);
+        } else {
+            sseOp.emit(this, operandSize, dst, imm8);
+        }
+    }
+
+    private void simdOp(SSERIOp sseOp, OperandSize operandSize, VexShiftImmOp avxOp, AVXSize avxSize, Register dst, Register src, int imm8) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, src, imm8);
+        } else {
+            sseOp.emit(this, operandSize, dst, imm8);
+        }
+    }
+
+    private void simdOp(SSEMRIOp sseOp, OperandSize operandSize, VexMRIOp vexOp, AVXSize avxSize, Register dst, Register src, int imm8) {
+        if (supports(CPUFeature.AVX)) {
+            vexOp.encoding(avxEncoding).emit(this, avxSize, dst, src, imm8);
+        } else {
+            sseOp.emit(this, operandSize, dst, src, imm8);
+        }
+    }
+
+    private void simdOp(SSEMRIOp sseOp, OperandSize operandSize, VexMRIOp vexOp, AVXSize avxSize, AMD64Address dst, Register src, int imm8) {
+        if (supports(CPUFeature.AVX)) {
+            vexOp.encoding(avxEncoding).emit(this, avxSize, dst, src, imm8);
+        } else {
+            sseOp.emit(this, operandSize, dst, src, imm8);
+        }
+    }
+
+    private void simdOp(SSEOp sseOp, OperandSize operandSize, VexRMOp avxOp, AVXSize avxSize, Register dst, Register src) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, src);
+        } else {
+            sseOp.emit(this, operandSize, dst, src);
+        }
+    }
+
+    private void simdOp(SSEOp sseOp, OperandSize operandSize, VexRMOp avxOp, AVXSize avxSize, Register dst, AMD64Address src) {
+        if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, src);
+        } else {
+            sseOp.emit(this, operandSize, dst, src);
+        }
+    }
+
+    private void simdOp(SSEOp sseOp, OperandSize operandSize, VexRMOp avxOp, VexRMOp avx512Op, AVXSize avxSize, Register dst, Register src) {
+        if (supportsFullAVX512()) {
+            avx512Op.encoding(avxEncoding).emit(this, avxSize, dst, src);
+        } else if (supports(CPUFeature.AVX)) {
+            avxOp.encoding(avxEncoding).emit(this, avxSize, dst, src);
+        } else {
+            sseOp.emit(this, operandSize, dst, src);
+        }
+    }
+
+    private void simdMoveOp(SSEOp sseOp, OperandSize size, VexMoveOp vexMove, AVXSize avxSize, Register dst, Register src) {
+        if (supports(CPUFeature.AVX)) {
+            vexMove.encoding(avxEncoding).emit(this, avxSize, dst, src);
+        } else {
+            sseOp.emit(this, size, dst, src);
+        }
+    }
+
+    private void simdMoveOp(SSEOp sseOp, OperandSize size, VexMoveOp vexMove, AVXSize avxSize, Register dst, AMD64Address src) {
+        if (supports(CPUFeature.AVX)) {
+            vexMove.encoding(avxEncoding).emit(this, avxSize, dst, src);
+        } else {
+            sseOp.emit(this, size, dst, src);
+        }
+    }
+
+    private void simdMoveOp(SSEMROp sseMrOp, OperandSize size, VexMoveOp vexMove, AVXSize avxSize, AMD64Address dst, Register src) {
+        if (supports(CPUFeature.AVX)) {
+            vexMove.encoding(avxEncoding).emit(this, avxSize, dst, src);
+        } else {
+            sseMrOp.emit(this, size, dst, src);
+        }
+    }
+
+    private void simdMoveOp(SSEMROp sseMrOp, OperandSize size, VexMoveOp vexMove, AVXSize avxSize, Register dst, Register src) {
+        if (supports(CPUFeature.AVX)) {
+            vexMove.encoding(avxEncoding).emitReverse(this, avxSize, dst, src);
+        } else {
+            sseMrOp.emit(this, size, dst, src);
+        }
+    }
+
+    /**
+     * Helper for macro methods that emit an SSE or AVX instruction for which no EVEX-encoded
+     * AVX-512 variant exists. Checks that the register can be addressed by the VEX variant.
+     */
+    private void guaranteeNotAVX512Register(String instruction, Register reg, VexOp vexVariant) {
+        if (supportsFullAVX512()) {
+            GraalError.guarantee(!isAVX512Register(reg),
+                            "No EVEX variant of instruction '%s' available. The VEX variant '%s' cannot address register %s without EVEX encoding. Rewrite using EVEX instructions or assign a fixed register in the range xmm0-xmm15 to this operand.",
+                            instruction, vexVariant, reg);
+        }
+    }
 }

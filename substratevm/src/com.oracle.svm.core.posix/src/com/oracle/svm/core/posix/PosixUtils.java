@@ -39,6 +39,7 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.SignedWord;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.Uninterruptible;
@@ -67,8 +68,6 @@ import com.oracle.svm.core.posix.headers.linux.LinuxTime;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
 import com.oracle.svm.core.util.BasedOnJDKFile;
 import com.oracle.svm.core.util.VMError;
-
-import jdk.graal.compiler.word.Word;
 
 public class PosixUtils {
     /** This method is unsafe and should not be used, see {@link LocaleSupport}. */
@@ -250,6 +249,11 @@ public class PosixUtils {
     public static boolean flush(FileDescriptor descriptor) {
         int fd = getFD(descriptor);
         return Unistd.fsync(fd) == 0;
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public static boolean flushUninterruptibly(int fd) {
+        return Unistd.NoTransitions.fsync(fd) == 0;
     }
 
     public static PointerBase dlopen(String file, int mode) {

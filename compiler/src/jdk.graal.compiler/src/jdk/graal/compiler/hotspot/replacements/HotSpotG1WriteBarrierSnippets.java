@@ -33,6 +33,7 @@ import static jdk.graal.compiler.hotspot.meta.HotSpotForeignCallsProviderImpl.NO
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import jdk.graal.compiler.core.common.CompressEncoding;
 import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
@@ -58,8 +59,6 @@ import jdk.graal.compiler.replacements.SnippetCounter.Group.Factory;
 import jdk.graal.compiler.replacements.SnippetTemplate.AbstractTemplates;
 import jdk.graal.compiler.replacements.SnippetTemplate.SnippetInfo;
 import jdk.graal.compiler.replacements.gc.G1WriteBarrierSnippets;
-import jdk.graal.compiler.serviceprovider.JavaVersionUtil;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.code.Register;
 import jdk.vm.ci.meta.JavaKind;
 
@@ -233,7 +232,7 @@ public final class HotSpotG1WriteBarrierSnippets extends G1WriteBarrierSnippets 
                             SATB_QUEUE_INDEX_LOCATION,
                             SATB_QUEUE_BUFFER_LOCATION);
 
-            if (JavaVersionUtil.JAVA_SPEC > 21 && Assertions.assertionsEnabled() && config.verifyBeforeGC) {
+            if (Assertions.assertionsEnabled() && config.verifyBeforeGC) {
                 g1PostWriteBarrier = snippet(providers,
                                 G1WriteBarrierSnippets.class,
                                 "g1PostWriteBarrier",

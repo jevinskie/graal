@@ -32,26 +32,35 @@ import java.net.URL;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
+import com.oracle.svm.core.annotate.RecomputeFieldValue.Kind;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
+import com.oracle.svm.core.annotate.TargetElement;
+import com.oracle.svm.core.hub.ClassForNameSupport;
+import com.oracle.svm.core.hub.RuntimeClassLoading;
 
 @TargetClass(value = jdk.internal.loader.BuiltinClassLoader.class)
 @SuppressWarnings({"unused", "static-method"})
 final class Target_jdk_internal_loader_BuiltinClassLoader {
 
-    @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
+    @Alias @RecomputeFieldValue(kind = Kind.Custom, declClass = NewConcurrentHashMap.class) //
     private Map<ModuleReference, ModuleReader> moduleToReader;
 
     @Substitute
+    @TargetElement(onlyWith = ClassForNameSupport.IgnoresClassLoader.class)
     protected Class<?> findClass(String name) throws ClassNotFoundException {
         throw new ClassNotFoundException(name);
     }
 
     @Substitute
+    @TargetElement(onlyWith = ClassForNameSupport.IgnoresClassLoader.class)
     protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
         Target_java_lang_ClassLoader self = SubstrateUtil.cast(this, Target_java_lang_ClassLoader.class);
         Class<?> clazz = self.findLoadedClass(name);
@@ -59,6 +68,16 @@ final class Target_jdk_internal_loader_BuiltinClassLoader {
             throw new ClassNotFoundException(name);
         }
         return clazz;
+    }
+
+    @Substitute
+    @TargetElement(onlyWith = ClassForNameSupport.IgnoresClassLoader.class)
+    protected Class<?> defineClass(String cn, Target_jdk_internal_loader_BuiltinClassLoader_LoadedModule loadedModule) {
+        /*
+         * Avoid dragging in logging & formatting code through
+         * ModuleReader->JarFile->Manifest->Attributes
+         */
+        throw RuntimeClassLoading.throwNoBytecodeClasses(cn);
     }
 
     @Substitute
@@ -102,4 +121,15 @@ final class Target_jdk_internal_loader_BuiltinClassLoader {
     private Enumeration<URL> findResourcesOnClassPath(String name) {
         return ResourcesHelper.nameToResourceEnumerationURLs(name);
     }
+
+    static final class NewConcurrentHashMap implements FieldValueTransformer {
+        @Override
+        public Object transform(Object receiver, Object originalValue) {
+            return new ConcurrentHashMap<>();
+        }
+    }
+}
+
+@TargetClass(value = jdk.internal.loader.BuiltinClassLoader.class, innerClass = "LoadedModule")
+final class Target_jdk_internal_loader_BuiltinClassLoader_LoadedModule {
 }

@@ -29,16 +29,15 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 
-import org.graalvm.nativeimage.c.function.CFunctionPointer;
-
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.svm.core.meta.MethodPointer;
 import com.oracle.svm.hosted.config.DynamicHubLayout;
 import com.oracle.svm.hosted.config.HybridLayout;
 import com.oracle.svm.hosted.meta.HostedField;
+import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.meta.HostedUniverse;
-import com.oracle.svm.hosted.meta.RelocatableConstant;
+import com.oracle.svm.hosted.meta.PatchedWordConstant;
 import com.oracle.svm.hosted.webimage.codegen.WebImageJSProviders;
 import com.oracle.svm.hosted.webimage.codegen.WebImageTypeControl;
 import com.oracle.svm.webimage.object.ConstantIdentityMapping;
@@ -94,7 +93,7 @@ public class WebImageObjectInspector extends ObjectInspector {
 
         assert !isFrozen() : "Object inspector already frozen";
 
-        HostedType type = (HostedType) providers.getMetaAccess().lookupJavaType(c);
+        HostedType type = providers.getMetaAccess().lookupJavaType(c);
 
         ObjectDefinition odef;
         if (type.isArray()) {
@@ -208,7 +207,7 @@ public class WebImageObjectInspector extends ObjectInspector {
         HostedUniverse hUniverse = ((WebImageTypeControl) typeControl).getHUniverse();
         for (HostedField f : fields.fields) {
             if (f.getJavaKind().isObject() && f.getType().getStorageKind().isObject()) {
-                if (!f.isValueAvailable()) {
+                if (!f.isValueAvailable(c)) {
                     // Use NULL for computed fields such as StringInternSupport.imageInternedStrings
                     // WebImageTypeControl.postProcess will patch the right value
                     members.add(NULL);
@@ -219,7 +218,7 @@ public class WebImageObjectInspector extends ObjectInspector {
                 members.add(inspectObject(fieldValue, out, identityMapping));
             } else if (f.getType().isPrimitive() || (f.getJavaKind().isObject() && f.getType().getStorageKind().isPrimitive())) {
                 JavaConstant fieldValue = constantReflection.readFieldValue(f, c);
-                if (fieldValue instanceof RelocatableConstant rc && rc.getPointer() instanceof MethodPointer pointer) {
+                if (fieldValue instanceof PatchedWordConstant pwc && pwc.getWord() instanceof MethodPointer pointer) {
                     AnalysisMethod method = (AnalysisMethod) pointer.getMethod();
                     ResolvedJavaMethod hostedMethod = hUniverse.lookup(method);
 
@@ -228,7 +227,7 @@ public class WebImageObjectInspector extends ObjectInspector {
                     typeControl.requestTypeName(hostedMethod.getDeclaringClass());
 
                     int index = identityMapping.addMethodPointer(hostedMethod);
-                    members.add(new MethodPointerType(rc, hostedMethod, index, f));
+                    members.add(new MethodPointerType(pwc, hostedMethod, index, f));
                 } else if (fieldValue instanceof PrimitiveConstant primitiveConstant) {
                     members.add(inspectObject(primitiveConstant, out, identityMapping));
                 } else {
@@ -249,7 +248,8 @@ public class WebImageObjectInspector extends ObjectInspector {
     private void buildArrayType(ArrayType<ObjectDefinition> out, JavaConstant c, ConstantIdentityMapping identityMapping) {
         assert c.isNonNull();
 
-        ResolvedJavaType arrayType = providers.getMetaAccess().lookupJavaType(c);
+        HostedMetaAccess meta = providers.getMetaAccess();
+        ResolvedJavaType arrayType = meta.lookupJavaType(c);
         assert arrayType.isArray() : c;
 
         HostedType componentType = (HostedType) arrayType.getComponentType();
@@ -286,18 +286,6 @@ public class WebImageObjectInspector extends ObjectInspector {
                     continue;
                 }
 
-                boolean continueInspection = false;
-                Class<?> tc = ((HostedType) providers.getMetaAccess().lookupJavaType(valueConstant)).getJavaClass();
-                // bailout on function ptrs
-                for (Class<?> interfaces : tc.getInterfaces()) {
-                    if (interfaces.equals(CFunctionPointer.class)) {
-                        continueInspection = true;
-                        break;
-                    }
-                }
-                if (continueInspection) {
-                    continue;
-                }
                 /*
                  * replace the elements here, we can never register the dynamic type, because if it
                  * is replace it is not part of the universe

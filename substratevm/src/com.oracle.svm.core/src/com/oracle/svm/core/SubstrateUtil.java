@@ -30,7 +30,6 @@ import java.io.FileOutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.util.List;
@@ -41,8 +40,6 @@ import java.util.regex.Pattern;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.type.CCharPointer;
-import org.graalvm.nativeimage.c.type.CCharPointerPointer;
-import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 
@@ -60,10 +57,10 @@ import jdk.graal.compiler.graph.Node.NodeIntrinsic;
 import jdk.graal.compiler.java.LambdaUtils;
 import jdk.graal.compiler.nodes.BreakpointNode;
 import jdk.graal.compiler.util.Digest;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
+import org.graalvm.word.impl.Word;
 
 public class SubstrateUtil {
 
@@ -90,26 +87,12 @@ public class SubstrateUtil {
         };
     }
 
-    /*
-     * [GR-55515]: Accessing isTerminal() reflectively only for 21 JDK compatibility. After dropping
-     * JDK 21, use it directly.
-     */
-    private static final Method IS_TERMINAL_METHOD = ReflectionUtil.lookupMethod(true, Console.class, "isTerminal");
-
     private static boolean isTTY() {
         Console console = System.console();
         if (console == null) {
             return false;
         }
-        if (IS_TERMINAL_METHOD != null) {
-            try {
-                return (boolean) IS_TERMINAL_METHOD.invoke(console);
-            } catch (IllegalAccessException | InvocationTargetException e) {
-                throw new Error(e);
-            }
-        } else {
-            return true;
-        }
+        return console.isTerminal();
     }
 
     public static boolean isNonInteractiveTerminal() {
@@ -150,6 +133,19 @@ public class SubstrateUtil {
         return sb.toString();
     }
 
+    /**
+     * Guarantees that the code is only executed at run time and not at image build time. The call
+     * should always be at the beginning of a method. It is not supposed to mark conditional code
+     * branches. It always indicates that the whole containing method is run-time only.
+     */
+    @AlwaysInline("Should be eliminated")
+    @Uninterruptible(reason = Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public static void guaranteeRuntimeOnly() {
+        if (HOSTED) {
+            throw VMError.shouldNotReachHere("Should only be called at run time");
+        }
+    }
+
     @TargetClass(com.oracle.svm.core.SubstrateUtil.class)
     static final class Target_com_oracle_svm_core_SubstrateUtil {
         @Alias @RecomputeFieldValue(kind = Kind.FromAlias, isFinal = true)//
@@ -165,23 +161,6 @@ public class SubstrateUtil {
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static FileDescriptor getFileDescriptor(FileOutputStream out) {
         return SubstrateUtil.cast(out, Target_java_io_FileOutputStream.class).fd;
-    }
-
-    /**
-     * Convert C-style to Java-style command line arguments. The first C-style argument, which is
-     * always the executable file name, is ignored.
-     *
-     * @param argc the number of arguments in the {@code argv} array.
-     * @param argv a C {@code char**}.
-     *
-     * @return the command line argument strings in a Java string array.
-     */
-    public static String[] convertCToJavaArgs(int argc, CCharPointerPointer argv) {
-        String[] args = new String[argc - 1];
-        for (int i = 1; i < argc; ++i) {
-            args[i - 1] = CTypeConversion.toJavaString(argv.read(i));
-        }
-        return args;
     }
 
     /**
@@ -534,5 +513,19 @@ public class SubstrateUtil {
         } else {
             return defaultClass;
         }
+    }
+
+    /** Sanitizes a name to be used in a file name. Special characters are replaced with '_'. */
+    public static String sanitizeForFileName(String name) {
+        StringBuilder buf = new StringBuilder(name.length());
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || (c >= '0' && c <= '9')) {
+                buf.append(c);
+            } else {
+                buf.append('_');
+            }
+        }
+        return buf.toString();
     }
 }

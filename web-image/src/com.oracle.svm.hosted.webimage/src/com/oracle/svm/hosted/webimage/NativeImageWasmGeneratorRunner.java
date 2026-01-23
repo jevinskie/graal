@@ -26,20 +26,17 @@ package com.oracle.svm.hosted.webimage;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 
-import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.Pair;
-import org.graalvm.nativeimage.Platform;
+import org.graalvm.collections.UnmodifiableEconomicMap;
 import org.graalvm.nativeimage.c.type.CIntPointer;
 import org.graalvm.nativeimage.c.type.CShortPointer;
 
 import com.oracle.graal.pointsto.util.TimerCollection;
 import com.oracle.svm.core.JavaMainWrapper;
+import com.oracle.svm.core.SubstrateGCOptions;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.option.ReplacingLocatableMultiOptionValue;
 import com.oracle.svm.core.util.ExitStatus;
@@ -58,12 +55,10 @@ import com.oracle.svm.hosted.webimage.options.WebImageOptions;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions.CompilerBackend;
 import com.oracle.svm.hosted.webimage.util.BenchmarkLogger;
 import com.oracle.svm.hosted.webimage.wasm.WebImageWasmLMJavaMainSupport;
-import com.oracle.svm.hosted.webimage.wasm.codegen.BinaryenCompat;
 import com.oracle.svm.hosted.webimage.wasmgc.WebImageWasmGCJavaMainSupport;
 import com.oracle.svm.webimage.WebImageJSJavaMainSupport;
 import com.oracle.svm.webimage.WebImageJavaMainSupport;
 
-import jdk.graal.compiler.core.common.GraalOptions;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.options.OptionDescriptor;
 import jdk.graal.compiler.options.OptionValues;
@@ -74,60 +69,11 @@ import jdk.graal.compiler.options.OptionValues;
  */
 public class NativeImageWasmGeneratorRunner extends NativeImageGeneratorRunner {
 
-    public static final String BACKEND_ARG = "-H:Backend(@[^=]*)?=.*";
-
     /**
      * @param args Hosted and runtime options
      */
     public static void main(String[] args) {
-        List<String> arguments = Arrays.asList(args);
-        arguments = extractDriverArguments(arguments);
-
-        CompilerBackend backend;
-        if (WebImageOptions.isNativeImageBackend()) {
-            // Under native-image, selection of the Web Image backend is not allowed
-            backend = CompilerBackend.WASMGC;
-        } else {
-            backend = extractBackend(arguments);
-        }
-
-        // installNativeImageClassLoader uses this property to create the platform instance.
-        System.setProperty(Platform.PLATFORM_PROPERTY_NAME, backend.platform.getName());
-        new NativeImageWasmGeneratorRunner().start(arguments.toArray(String[]::new));
-    }
-
-    /**
-     * Extracts the {@link NativeImageWasmGeneratorRunner#BACKEND_ARG} argument as a
-     * {@link CompilerBackend} from the list of arguments.
-     *
-     * @param arguments The list of arguments. The backend argument will be removed from the list if
-     *            specified.
-     * @return The appropriate compiler backend for the given arguments or
-     *         {@link CompilerBackend#JS} if none was specified
-     */
-    public static CompilerBackend extractBackend(List<String> arguments) {
-        Iterator<String> it = arguments.iterator();
-
-        while (it.hasNext()) {
-            String param = it.next();
-
-            if (param.matches(BACKEND_ARG)) {
-                it.remove();
-                String[] parts = param.split("=", 2);
-                if (parts.length != 2) {
-                    throw new IllegalArgumentException(BACKEND_ARG + " needs an argument");
-                }
-                String backendName = parts[1].toUpperCase(Locale.ROOT);
-                try {
-                    return CompilerBackend.valueOf(backendName);
-                } catch (IllegalArgumentException e) {
-                    throw new IllegalArgumentException("No backend with name " + backendName + " exists", e);
-                }
-            }
-        }
-
-        // Use JS backend by default
-        return CompilerBackend.JS;
+        new NativeImageWasmGeneratorRunner().start(args);
     }
 
     /**
@@ -137,12 +83,21 @@ public class NativeImageWasmGeneratorRunner extends NativeImageGeneratorRunner {
      * {@code svm-wasm} tool macro contains all option names.
      */
     private static void dumpProvidedHostedOptions(HostedOptionParser optionParser) {
-        EconomicMap<String, OptionDescriptor> allHostedOptions = optionParser.getAllHostedOptions();
+        UnmodifiableEconomicMap<String, OptionDescriptor> allHostedOptions = optionParser.getAllHostedOptions();
 
         List<String> names = new ArrayList<>();
 
         for (OptionDescriptor value : allHostedOptions.getValues()) {
-            if (!value.getDeclaringClass().getPackageName().contains("webimage") || WebImageOptions.DebugOptions.DumpProvidedHostedOptionsAndExit == value.getOptionKey()) {
+            if (!value.getDeclaringClass().getPackageName().contains("webimage")) {
+                continue;
+            }
+
+            if (WebImageOptions.DebugOptions.DumpProvidedHostedOptionsAndExit == value.getOptionKey()) {
+                continue;
+            }
+
+            // Do not print the Backend option, it's not available in the svm-wasm macro
+            if (WebImageOptions.Backend == value.getOptionKey()) {
                 continue;
             }
 
@@ -171,15 +126,9 @@ public class NativeImageWasmGeneratorRunner extends NativeImageGeneratorRunner {
             return ExitStatus.OK.getValue();
         }
 
-        optionProvider.getHostedValues().put(GraalOptions.EagerSnippets, true);
-
-        // Turn off fallback images, Web Image cannot be built as a fallback image.
-        optionProvider.getHostedValues().put(SubstrateOptions.FallbackThreshold, SubstrateOptions.NoFallback);
-
-        optionProvider.getRuntimeValues().put(GraalOptions.EagerSnippets, true);
-
         // We do not need to compile a GC because the JavaScript environment provides one.
         optionProvider.getHostedValues().put(SubstrateOptions.SupportedGCs, ReplacingLocatableMultiOptionValue.DelimitedString.buildWithCommaDelimiter());
+        optionProvider.getHostedValues().put(SubstrateGCOptions.UseTLAB, false);
 
         // Forcibly turn off CAnnotation processor cache
         optionProvider.getHostedValues().put(CAnnotationProcessorCache.Options.UseCAPCache, false);
@@ -207,19 +156,16 @@ public class NativeImageWasmGeneratorRunner extends NativeImageGeneratorRunner {
             optionProvider.getHostedValues().put(SubstrateOptions.ParseRuntimeOptions, false);
         }
 
-        // force closed-world
+        // GR-71032 support open type world hub layout
+        // force closed type world and hub layout
         optionProvider.getHostedValues().put(SubstrateOptions.ClosedTypeWorld, true);
+        optionProvider.getHostedValues().put(SubstrateOptions.ClosedTypeWorldHubLayout, true);
 
         CompilerBackend backend = WebImageOptions.getBackend(classLoader);
 
         if (backend == CompilerBackend.WASM || backend == CompilerBackend.WASMGC) {
             // For the Wasm backends, turn off closure compiler
             optionProvider.getHostedValues().put(WebImageOptions.ClosureCompiler, false);
-
-            if (backend == CompilerBackend.WASMGC && !optionProvider.getHostedValues().containsKey(BinaryenCompat.Options.UseBinaryen)) {
-                // For WasmGC backend, use binaryen by default
-                optionProvider.getHostedValues().put(BinaryenCompat.Options.UseBinaryen, true);
-            }
 
             if (!optionProvider.getHostedValues().containsKey(WebImageOptions.NamingConvention)) {
                 // The naming convention does not affect the binary image (unless debug information
@@ -237,9 +183,9 @@ public class NativeImageWasmGeneratorRunner extends NativeImageGeneratorRunner {
     }
 
     @Override
-    protected void reportEpilog(String imageName, ProgressReporter reporter, ImageClassLoader classLoader, boolean wasSuccessfulBuild, Throwable vmError, OptionValues parsedHostedOptions) {
-        super.reportEpilog(imageName, reporter, classLoader, wasSuccessfulBuild, vmError, parsedHostedOptions);
-        if (wasSuccessfulBuild) {
+    protected void reportEpilog(String imageName, ProgressReporter reporter, ImageClassLoader classLoader, BuildOutcome buildOutcome, Throwable vmError, OptionValues parsedHostedOptions) {
+        super.reportEpilog(imageName, reporter, classLoader, buildOutcome, vmError, parsedHostedOptions);
+        if (buildOutcome.successful()) {
             BenchmarkLogger.printBuildTime((int) TimerCollection.singleton().get(TimerCollection.Registry.TOTAL).getTotalTime(), parsedHostedOptions);
         }
     }

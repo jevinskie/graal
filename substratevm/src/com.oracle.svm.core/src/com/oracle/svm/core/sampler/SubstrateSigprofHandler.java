@@ -50,7 +50,7 @@ import com.oracle.svm.core.thread.VMThreads;
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionType;
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.Word;
 
 /**
  * This is the core class of the low overhead asynchronous execution sampler. It registers a SIGPROF
@@ -203,7 +203,7 @@ public abstract class SubstrateSigprofHandler extends AbstractJfrExecutionSample
         }
 
         /* Write isolate pointer (heap base) into register. */
-        CEntryPointSnippets.setHeapBase(Isolates.getHeapBase(isolate));
+        CEntryPointSnippets.initBaseRegisters(Isolates.getHeapBase(isolate));
 
         /* We are keeping reference to isolate thread inside OS thread local area. */
         ThreadLocalKey key = singleton().keyForNativeThreadLocal;

@@ -30,7 +30,7 @@ import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.graalvm.nativeimage.impl.ConfigurationCondition;
+import org.graalvm.nativeimage.dynamicaccess.AccessCondition;
 import org.graalvm.nativeimage.impl.ReflectionRegistry;
 
 /**
@@ -47,45 +47,45 @@ public class JSEntryPointRegistry implements ReflectionRegistry {
     public final Set<Executable> entryPoints = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     @Override
-    public void register(ConfigurationCondition condition, boolean unsafeAllocated, Class<?> clazz) {
+    public void register(AccessCondition condition, boolean preserved, Class<?> clazz) {
         // Do nothing for types
     }
 
     @Override
-    public void register(ConfigurationCondition condition, boolean queriedOnly, Executable... methods) {
-        if (!ConfigurationCondition.alwaysTrue().equals(condition)) {
-            System.err.println("Conditional specification in entry points configuration is not supported and is ignored");
+    public void register(AccessCondition condition, boolean queriedOnly, boolean preserved, Executable... methods) {
+        if (!AccessCondition.unconditional().equals(condition)) {
+            System.out.println("Conditional specification in entry points configuration is not supported and is ignored");
         }
 
         if (queriedOnly) {
-            System.err.println("Query specification in entry points configuration is not supported and is ignored");
+            System.out.println("Query specification in entry points configuration is not supported and is ignored");
         } else {
             Collections.addAll(entryPoints, methods);
         }
     }
 
     @Override
-    public void register(ConfigurationCondition condition, boolean finalIsWritable, Field... fields) {
-        System.err.println("The specification for fields in entry points configuration is not supported and is ignored.");
+    public void register(AccessCondition condition, boolean finalIsWritable, boolean preserved, Field... fields) {
+        System.out.println("The specification for fields in entry points configuration is not supported and is ignored.");
     }
 
     @Override
-    public void registerClassLookup(ConfigurationCondition condition, String typeName) {
-
-    }
-
-    @Override
-    public void registerFieldLookup(ConfigurationCondition condition, Class<?> declaringClass, String fieldName) {
+    public void registerClassLookup(AccessCondition condition, boolean preserved, String typeName) {
 
     }
 
     @Override
-    public void registerMethodLookup(ConfigurationCondition condition, Class<?> declaringClass, String methodName, Class<?>... parameterTypes) {
+    public void registerFieldLookup(AccessCondition condition, boolean preserved, Class<?> declaringClass, String fieldName) {
 
     }
 
     @Override
-    public void registerConstructorLookup(ConfigurationCondition condition, Class<?> declaringClass, Class<?>... parameterTypes) {
+    public void registerMethodLookup(AccessCondition condition, boolean preserved, Class<?> declaringClass, String methodName, Class<?>... parameterTypes) {
+
+    }
+
+    @Override
+    public void registerConstructorLookup(AccessCondition condition, boolean preserved, Class<?> declaringClass, Class<?>... parameterTypes) {
 
     }
 }

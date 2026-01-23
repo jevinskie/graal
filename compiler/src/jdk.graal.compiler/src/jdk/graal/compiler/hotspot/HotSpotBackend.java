@@ -42,6 +42,7 @@ import org.graalvm.collections.EconomicSet;
 import org.graalvm.collections.Equivalence;
 import org.graalvm.collections.MapCursor;
 import org.graalvm.word.LocationIdentity;
+import org.graalvm.word.impl.Word;
 import org.graalvm.word.WordBase;
 
 import jdk.graal.compiler.code.CompilationResult;
@@ -75,11 +76,8 @@ import jdk.graal.compiler.lir.framemap.FrameMap;
 import jdk.graal.compiler.nodes.NamedLocationIdentity;
 import jdk.graal.compiler.nodes.UnwindNode;
 import jdk.graal.compiler.nodes.extended.ForeignCallNode;
-import jdk.graal.compiler.options.Option;
-import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.tiers.SuitesProvider;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.code.CallingConvention;
 import jdk.vm.ci.code.CompilationRequest;
 import jdk.vm.ci.code.CompiledCode;
@@ -101,13 +99,6 @@ import jdk.vm.ci.runtime.JVMCICompiler;
  * HotSpot specific backend.
  */
 public abstract class HotSpotBackend extends Backend implements FrameMap.ReferenceMapBuilderFactory {
-
-    public static class Options {
-        // @formatter:off
-        @Option(help = "Use Graal arithmetic stubs instead of HotSpot stubs where possible")
-        public static final OptionKey<Boolean> GraalArithmeticStubs = new OptionKey<>(true);
-        // @formatter:on
-    }
 
     /**
      * Descriptor for {@link ExceptionHandlerStub}. This stub is called by the
@@ -270,6 +261,25 @@ public abstract class HotSpotBackend extends Backend implements FrameMap.Referen
                     WordBase.class, int.class);
     public static final HotSpotForeignCallDescriptor DILITHIUM_DECOMPOSE_POLY = new HotSpotForeignCallDescriptor(LEAF, HAS_SIDE_EFFECT, any(), "_dilithiumDecomposePoly", int.class,
                     WordBase.class, WordBase.class, WordBase.class, int.class, int.class);
+
+    public static final HotSpotForeignCallDescriptor KYBER_NTT = new HotSpotForeignCallDescriptor(LEAF, HAS_SIDE_EFFECT, any(), "_kyberNtt", int.class,
+                    WordBase.class, WordBase.class);
+    public static final HotSpotForeignCallDescriptor KYBER_INVERSE_NTT = new HotSpotForeignCallDescriptor(LEAF, HAS_SIDE_EFFECT, any(), "_kyberInverseNtt", int.class,
+                    WordBase.class, WordBase.class);
+    public static final HotSpotForeignCallDescriptor KYBER_NTT_MULT = new HotSpotForeignCallDescriptor(LEAF, HAS_SIDE_EFFECT, any(), "_kyberNttMult", int.class,
+                    WordBase.class, WordBase.class, WordBase.class, WordBase.class);
+    public static final HotSpotForeignCallDescriptor KYBER_ADD_POLY_2 = new HotSpotForeignCallDescriptor(LEAF, HAS_SIDE_EFFECT, any(), "_kyberAddPoly_2", int.class,
+                    WordBase.class, WordBase.class, WordBase.class);
+    public static final HotSpotForeignCallDescriptor KYBER_ADD_POLY_3 = new HotSpotForeignCallDescriptor(LEAF, HAS_SIDE_EFFECT, any(), "_kyberAddPoly_3", int.class,
+                    WordBase.class, WordBase.class, WordBase.class, WordBase.class);
+    public static final HotSpotForeignCallDescriptor KYBER_12_TO_16 = new HotSpotForeignCallDescriptor(LEAF, HAS_SIDE_EFFECT, any(), "_kyber12To16", int.class,
+                    WordBase.class, int.class, WordBase.class, int.class);
+    public static final HotSpotForeignCallDescriptor KYBER_BARRETT_REDUCE = new HotSpotForeignCallDescriptor(LEAF, HAS_SIDE_EFFECT, any(), "_kyberBarrettReduce", int.class,
+                    WordBase.class);
+    public static final HotSpotForeignCallDescriptor ARRAY_SORT = new HotSpotForeignCallDescriptor(LEAF_NO_VZERO, HAS_SIDE_EFFECT, any(), "_array_sort", void.class,
+                    WordBase.class, int.class, int.class, int.class);
+    public static final HotSpotForeignCallDescriptor ARRAY_PARTITION = new HotSpotForeignCallDescriptor(LEAF_NO_VZERO, HAS_SIDE_EFFECT, any(), "_array_partition", void.class,
+                    WordBase.class, int.class, int.class, int.class, WordBase.class, int.class, int.class);
 
     public static final HotSpotForeignCallDescriptor SHAREDRUNTIME_NOTIFY_JVMTI_VTHREAD_START = new HotSpotForeignCallDescriptor(SAFEPOINT, HAS_SIDE_EFFECT, any(),
                     "notify_jvmti_vthread_start", void.class,

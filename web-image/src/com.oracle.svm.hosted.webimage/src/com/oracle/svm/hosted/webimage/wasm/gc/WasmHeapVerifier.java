@@ -31,6 +31,7 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.MemoryWalker;
 import com.oracle.svm.core.config.ConfigurationValues;
@@ -45,8 +46,6 @@ import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.InteriorObjRefWalker;
 import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
-
-import jdk.graal.compiler.word.Word;
 
 /**
  * Verifies correctness of objects in the heap (see {@link #verifyObject}).
@@ -216,9 +215,8 @@ public class WasmHeapVerifier {
         }
 
         @Override
-        public boolean visitObject(Object object) {
+        public void visitObject(Object object) {
             result &= verifyObject(object);
-            return true;
         }
     }
 
@@ -234,20 +232,19 @@ public class WasmHeapVerifier {
         }
 
         @Override
-        public <T> boolean visitNativeImageHeapRegion(T region, MemoryWalker.NativeImageHeapRegionAccess<T> access) {
+        public <T> void visitNativeImageHeapRegion(T region, MemoryWalker.NativeImageHeapRegionAccess<T> access) {
             access.visitObjects(region, this);
-            return true;
         }
 
         @Override
-        public boolean visitObject(Object object) {
-            Word pointer = Word.objectToUntrackedPointer(object);
+        public void visitObject(Object object) {
+            Word pointer = Word.objectToUntrackedWord(object);
             if (!Heap.getHeap().isInImageHeap(object)) {
                 Log.log().string("Image heap object ").zhex(pointer).string(" is not considered as part of the image heap.").newline();
                 result = false;
             }
 
-            return super.visitObject(object);
+            super.visitObject(object);
         }
     }
 
@@ -266,9 +263,17 @@ public class WasmHeapVerifier {
         }
 
         @Override
-        public boolean visitObjectReference(Pointer objRef, boolean compressed, Object holderObject) {
+        public void visitObjectReferences(Pointer firstObjRef, boolean compressed, int referenceSize, Object holderObject, int count) {
+            Pointer pos = firstObjRef;
+            Pointer end = firstObjRef.add(Word.unsigned(count).multiply(referenceSize));
+            while (pos.belowThan(end)) {
+                visitObjectReference(pos, compressed, holderObject);
+                pos = pos.add(referenceSize);
+            }
+        }
+
+        private void visitObjectReference(Pointer objRef, boolean compressed, Object holderObject) {
             result &= verifyReference(holderObject, objRef, compressed);
-            return true;
         }
     }
 }

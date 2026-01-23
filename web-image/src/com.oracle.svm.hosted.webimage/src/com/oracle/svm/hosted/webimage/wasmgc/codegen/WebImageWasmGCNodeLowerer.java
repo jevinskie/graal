@@ -30,8 +30,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.results.StrengthenGraphs;
+import com.oracle.svm.core.graal.nodes.FloatingWordCastNode;
 import com.oracle.svm.core.graal.nodes.LoweredDeadEndNode;
 import com.oracle.svm.core.graal.nodes.ReadExceptionObjectNode;
 import com.oracle.svm.core.hub.DynamicHub;
@@ -45,6 +45,7 @@ import com.oracle.svm.hosted.webimage.codegen.node.WriteIdentityHashCodeNode;
 import com.oracle.svm.hosted.webimage.js.JSBody;
 import com.oracle.svm.hosted.webimage.js.JSBodyNode;
 import com.oracle.svm.hosted.webimage.js.JSBodyWithExceptionNode;
+import com.oracle.svm.hosted.webimage.options.WebImageOptions;
 import com.oracle.svm.hosted.webimage.wasm.WasmJSCounterparts;
 import com.oracle.svm.hosted.webimage.wasm.WebImageWasmOptions;
 import com.oracle.svm.hosted.webimage.wasm.ast.Instruction;
@@ -68,7 +69,7 @@ import com.oracle.svm.hosted.webimage.wasmgc.ast.id.GCKnownIds;
 import com.oracle.svm.hosted.webimage.wasmgc.ast.id.WebImageWasmGCIds;
 import com.oracle.svm.hosted.webimage.wasmgc.types.WasmGCUtil;
 import com.oracle.svm.hosted.webimage.wasmgc.types.WasmRefType;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 import com.oracle.svm.webimage.functionintrinsics.JSCallNode;
 import com.oracle.svm.webimage.functionintrinsics.JSSystemFunction;
 import com.oracle.svm.webimage.wasm.WasmForeignCallDescriptor;
@@ -77,6 +78,7 @@ import com.oracle.svm.webimage.wasmgc.WasmExtern;
 import com.oracle.svm.webimage.wasmgc.WasmGCJSConversion;
 
 import jdk.graal.compiler.core.common.type.AbstractObjectStamp;
+import jdk.graal.compiler.core.common.type.AbstractPointerStamp;
 import jdk.graal.compiler.core.common.type.PrimitiveStamp;
 import jdk.graal.compiler.core.common.type.Stamp;
 import jdk.graal.compiler.core.common.type.TypeReference;
@@ -139,6 +141,8 @@ import jdk.graal.compiler.nodes.memory.WriteNode;
 import jdk.graal.compiler.nodes.memory.address.OffsetAddressNode;
 import jdk.graal.compiler.nodes.spi.CoreProviders;
 import jdk.graal.compiler.replacements.nodes.AssertionNode;
+import jdk.graal.compiler.replacements.nodes.BinaryMathIntrinsicGenerationNode;
+import jdk.graal.compiler.replacements.nodes.UnaryMathIntrinsicGenerationNode;
 import jdk.graal.compiler.word.WordCastNode;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
@@ -240,6 +244,37 @@ public class WebImageWasmGCNodeLowerer extends WebImageWasmNodeLowerer {
         return new Instruction.Return(result);
     }
 
+    @Override
+    protected Instruction lowerExpression(ValueNode n, WasmIRWalker.Requirements reqs) {
+        Instruction inst = super.lowerExpression(n, reqs);
+
+        /*
+         * Produce a constant null value for always-null stamps.
+         *
+         * Always null stamps are a bit of a special case because they often don't have concrete
+         * type information, which is required in WasmGC because even null-constant have a static
+         * type. For that reason, the actual instruction are emitted as a top-level instruction and
+         * dropped (since it may have a side effect) and we simply return a "ref.null none", which
+         * represents the bottom type and thus satisfies all subtype checks, at all usages.
+         */
+        if (n.stamp(NodeView.DEFAULT) instanceof AbstractPointerStamp pointerStamp && pointerStamp.alwaysNull()) {
+            if (!(inst instanceof Instruction.LocalGet)) {
+                /*
+                 * We can't just not emit the instruction, it may have side effects, so we just emit
+                 * it in the same block and ignore its output (which is guaranteed to be null).
+                 *
+                 * If the node's value was stored in a variable and would be just loaded here, we
+                 * can omit this, as there are no side-effects.
+                 */
+                masm.genInst(new Instruction.Drop(inst));
+            }
+
+            return new Instruction.RefNull(WasmRefType.NONE);
+        } else {
+            return inst;
+        }
+    }
+
     protected Instruction lowerUnwind(UnwindNode n) {
         return new Instruction.Call(masm().getKnownIds().throwTemplate.requestFunctionId(), lowerExpression(n.exception()));
     }
@@ -250,9 +285,11 @@ public class WebImageWasmGCNodeLowerer extends WebImageWasmNodeLowerer {
             case ConstantNode constant -> lowerConstant(constant);
             case ParameterNode param -> lowerParam(param);
             case BinaryNode binary -> lowerBinary(binary);
+            case BinaryMathIntrinsicGenerationNode binaryMathIntrinsic -> lowerBinaryMathIntrinsicGeneration(binaryMathIntrinsic);
             case CompressionNode compression -> lowerCompression(compression, reqs);
             case UnwindNode unwind -> lowerUnwind(unwind);
             case UnaryNode unary -> lowerUnary(unary);
+            case UnaryMathIntrinsicGenerationNode unaryMathIntrinsic -> lowerUnaryMathIntrinsicGeneration(unaryMathIntrinsic);
             case ReadExceptionObjectNode readExceptionObject -> lowerReadException(readExceptionObject);
             case BoxNode box -> lowerBox(box, reqs);
             case UnboxNode unbox -> lowerUnbox(unbox);
@@ -283,11 +320,14 @@ public class WebImageWasmGCNodeLowerer extends WebImageWasmNodeLowerer {
             case JSBodyNode jsBody -> lowerJSBody(jsBody);
             case JSBodyWithExceptionNode jsBody -> lowerJSBody(jsBody);
             case WordCastNode wordCast -> lowerWordCast(wordCast);
+            case FloatingWordCastNode wordCast -> lowerFloatingWordCast(wordCast);
             default -> {
                 assert !isForbiddenNode(n) : reportForbiddenNode(n);
+                if (WebImageOptions.DebugOptions.VerificationPhases.getValue()) {
+                    throw GraalError.shouldNotReachHere("Tried to lower unknown node: " + n);
+                }
                 // TODO GR-47009 Stop generating stub code.
                 yield getStub(n);
-                // throw GraalError.shouldNotReachHere("Tried to lower unknown node: " + n);
             }
         };
     }
@@ -353,7 +393,7 @@ public class WebImageWasmGCNodeLowerer extends WebImageWasmNodeLowerer {
         if (toIsSubtype && !wasmFromType.equals(wasmToType)) {
             original.setComment(masm.getNodeComment(node));
             Instruction cast = new Instruction.RefCast(original, (WasmRefType) util.typeForJavaType(wasmToType));
-            cast.setComment("Explicit downcast due to type mismatch, expected " + wasmToType.getName() + ", got " + wasmFromType.getName());
+            cast.setComment("Explicit downcast due to type mismatch, expected " + wasmToType.toClassName() + ", got " + wasmFromType.toClassName());
             return cast;
         }
 
@@ -361,7 +401,7 @@ public class WebImageWasmGCNodeLowerer extends WebImageWasmNodeLowerer {
     }
 
     private Instruction lowerNewInstance(NewInstanceNode newInstance) {
-        return new Instruction.Call(masm().getKnownIds().instanceCreateTemplate.requestFunctionId(OriginalClassProvider.getJavaClass(newInstance.instanceClass())));
+        return new Instruction.Call(masm().getKnownIds().instanceCreateTemplate.requestFunctionId((HostedType) newInstance.instanceClass()));
     }
 
     private Instruction lowerDynamicNewInstance(DynamicNewInstanceNode newInstance) {
@@ -391,11 +431,12 @@ public class WebImageWasmGCNodeLowerer extends WebImageWasmNodeLowerer {
         assert newArray.getKnownElementKind() == JavaKind.Object : newArray.getKnownElementKind();
 
         WasmId.StructType hubTypeId = masm().getWasmProviders().util().getHubObjectId();
-        ResolvedJavaField hubCompanionField = masm.getProviders().getMetaAccess().lookupJavaField(ReflectionUtil.lookupField(DynamicHub.class, "companion"));
+        MetaAccessProvider metaAccess = masm.getProviders().getMetaAccess();
+        ResolvedJavaField hubCompanionField = JVMCIReflectionUtil.getUniqueDeclaredField(metaAccess, DynamicHub.class, "companion");
         WasmId.Field companionFieldId = masm.idFactory.newJavaField(hubCompanionField);
 
         WasmId.StructType companionTypeId = masm.idFactory.newJavaStruct(masm.getWasmProviders().getMetaAccess().lookupJavaType(DynamicHubCompanion.class));
-        ResolvedJavaField companionArrayHubField = masm.getProviders().getMetaAccess().lookupJavaField(ReflectionUtil.lookupField(DynamicHubCompanion.class, "arrayHub"));
+        ResolvedJavaField companionArrayHubField = JVMCIReflectionUtil.getUniqueDeclaredField(metaAccess, DynamicHubCompanion.class, "arrayHub");
         WasmId.Field arrayHubFieldId = masm.idFactory.newJavaField(companionArrayHubField);
 
         Instruction.StructGet companion = new Instruction.StructGet(hubTypeId, companionFieldId, Extension.None, lowerExpression(newArray.getElementType()));
@@ -443,9 +484,10 @@ public class WebImageWasmGCNodeLowerer extends WebImageWasmNodeLowerer {
     }
 
     private Instruction lowerLoadArrayComponentHub(LoadArrayComponentHubNode loadArrayComponentHub) {
-        ResolvedJavaField componentTypeField = masm.getProviders().getMetaAccess().lookupJavaField(ReflectionUtil.lookupField(DynamicHub.class, "componentType"));
+        WebImageWasmGCProviders providers = masm().getWasmProviders();
+        ResolvedJavaField componentTypeField = JVMCIReflectionUtil.getUniqueDeclaredField(providers.getMetaAccess(), DynamicHub.class, "componentType");
 
-        WasmId.StructType hubTypeId = masm().getWasmProviders().util().getHubObjectId();
+        WasmId.StructType hubTypeId = providers.util().getHubObjectId();
         WasmId.Field componentTypeFieldId = masm.idFactory.newJavaField(componentTypeField);
 
         return new Instruction.StructGet(hubTypeId, componentTypeFieldId, Extension.None, lowerExpression(loadArrayComponentHub.getValue()));
@@ -1078,7 +1120,8 @@ public class WebImageWasmGCNodeLowerer extends WebImageWasmNodeLowerer {
         return returnValue;
     }
 
-    private Instruction lowerWordCast(WordCastNode n) {
+    @Override
+    protected Instruction lowerWordCast(WordCastNode n) {
         // TODO GR-60168 Eliminate WordCastNodes completely. They are fundamentally not supportable
         // under WasmGC
         logError("This method should never be reached and cannot be supported.");

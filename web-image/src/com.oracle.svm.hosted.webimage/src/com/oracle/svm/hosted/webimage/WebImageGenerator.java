@@ -41,13 +41,16 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.webimage.api.JS;
 
 import com.oracle.graal.pointsto.infrastructure.SubstitutionProcessor;
-import com.oracle.graal.pointsto.util.GraalAccess;
 import com.oracle.graal.pointsto.util.Timer;
 import com.oracle.graal.pointsto.util.TimerCollection;
 import com.oracle.svm.core.JavaMainWrapper;
 import com.oracle.svm.core.SubstrateTargetDescription;
 import com.oracle.svm.core.graal.code.SubstratePlatformConfigurationProvider;
 import com.oracle.svm.core.heap.BarrierSetProvider;
+import com.oracle.svm.core.image.ImageHeapLayoutInfo;
+import com.oracle.svm.core.image.ImageHeapLayouter;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
+import com.oracle.svm.core.jdk.ImageKindInfoSingleton;
 import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.NativeImageGenerator;
@@ -69,7 +72,9 @@ import com.oracle.svm.hosted.webimage.logging.visualization.VisualizationSupport
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
 import com.oracle.svm.hosted.webimage.wasm.annotation.WasmStartFunction;
 import com.oracle.svm.hosted.webimage.wasm.codegen.WasmWebImage;
+import com.oracle.svm.util.GraalAccess;
 import com.oracle.svm.webimage.platform.WebImagePlatformConfigurationProvider;
+import com.oracle.svm.webimage.wasm.types.WasmUtil;
 import com.oracle.svm.webimage.wasmgc.annotation.WasmExport;
 
 import jdk.graal.compiler.debug.GraalError;
@@ -138,8 +143,8 @@ public class WebImageGenerator extends NativeImageGenerator {
     }
 
     @Override
-    protected void createAbstractImage(AbstractImage.NativeImageKind k, List<HostedMethod> hostedEntryPoints, NativeImageHeap heap, HostedMetaAccess hMetaAccess,
-                    NativeImageCodeCache codeCache) {
+    protected void createAbstractImage(AbstractImage.NativeImageKind k, List<HostedMethod> hostedEntryPoints, NativeImageHeap heap,
+                    ImageHeapLayoutInfo heapLayout, HostedMetaAccess hMetaAccess, NativeImageCodeCache codeCache) {
         /*
          * For executable images, use the main entry point as provided by native image. Otherwise,
          * pass on the library initialization code as the main entry point.
@@ -148,15 +153,17 @@ public class WebImageGenerator extends NativeImageGenerator {
         this.image = switch (WebImageOptions.getBackend()) {
             // For now the WasmGC backend does not require its own specialized WebImage subclass and
             // WasmWebImage has linear-memory specific code
-            case JS -> new WebImage(k, hUniverse, hMetaAccess, nativeLibraries, heap, codeCache, hostedEntryPoints, loader, mainEntryPointMethod);
-            case WASM, WASMGC -> new WasmWebImage(k, hUniverse, hMetaAccess, nativeLibraries, heap, codeCache, hostedEntryPoints, loader, mainEntryPointMethod);
+            case JS -> new WebImage(k, hUniverse, hMetaAccess, nativeLibraries, heap, heapLayout, codeCache, hostedEntryPoints, loader, mainEntryPointMethod);
+            case WASM, WASMGC -> new WasmWebImage(k, hUniverse, hMetaAccess, nativeLibraries, heap, heapLayout, codeCache, hostedEntryPoints, loader, mainEntryPointMethod);
         };
     }
 
     private static void setWebImageSystemProperties() {
         System.setProperty("svm.targetName", "Browser");
         System.setProperty("svm.targetArch", "ECMAScript 2015");
-        System.setProperty(ImageInfo.PROPERTY_IMAGE_KIND_KEY, ImageInfo.PROPERTY_IMAGE_KIND_VALUE_EXECUTABLE);
+        if (ImageLayerBuildingSupport.lastImageBuild()) {
+            ImageKindInfoSingleton.singleton().setImageKindInfoProperty(ImageInfo.PROPERTY_IMAGE_KIND_VALUE_EXECUTABLE);
+        }
     }
 
     @Override
@@ -218,10 +225,17 @@ public class WebImageGenerator extends NativeImageGenerator {
      * we have a custom handling.
      */
     @Override
-    protected void buildNativeImageHeap(NativeImageHeap heap, NativeImageCodeCache codeCache) {
+    protected ImageHeapLayoutInfo buildNativeImageHeap(NativeImageHeap heap, NativeImageCodeCache codeCache) {
+        ImageHeapLayoutInfo layout = null;
         if (WebImageOptions.getBackend() != WebImageOptions.CompilerBackend.JS) {
-            super.buildNativeImageHeap(heap, codeCache);
+            layout = super.buildNativeImageHeap(heap, codeCache);
         }
+        return layout;
+    }
+
+    @Override
+    protected ImageHeapLayoutInfo layoutNativeImageHeap(NativeImageHeap heap) {
+        return heap.getLayouter().layout(heap, WasmUtil.PAGE_SIZE, ImageHeapLayouter.ImageHeapLayouterCallback.NONE);
     }
 
     @Override

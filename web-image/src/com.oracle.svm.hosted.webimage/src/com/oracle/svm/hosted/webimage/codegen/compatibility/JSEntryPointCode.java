@@ -29,12 +29,11 @@ import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.webimage.codegen.Array;
 import com.oracle.svm.hosted.webimage.codegen.JSCodeGenTool;
 import com.oracle.svm.hosted.webimage.codegen.Runtime;
-import com.oracle.svm.webimage.JSKeyword;
+import com.oracle.svm.hosted.webimage.js.JSKeyword;
 import com.oracle.svm.webimage.functionintrinsics.JSFunctionDefinition;
 import com.oracle.svm.webimage.functionintrinsics.JSGenericFunctionDefinition;
-
-import jdk.graal.compiler.hightiercodegen.CodeBuffer;
-import jdk.graal.compiler.hightiercodegen.Emitter;
+import com.oracle.svm.webimage.hightiercodegen.CodeBuffer;
+import com.oracle.svm.webimage.hightiercodegen.Emitter;
 
 /**
  * Generates the function that calls the entry point.
@@ -61,7 +60,7 @@ public class JSEntryPointCode {
          * The entry point gets passed an array of JS strings. Here we convert that into an array
          * (with hub) of Java strings.
          */
-        HostedType stringtype = (HostedType) jsLTools.getProviders().getMetaAccess().lookupJavaType(String.class);
+        HostedType stringtype = jsLTools.getProviders().getMetaAccess().lookupJavaType(String.class);
         jsLTools.genResolvedVarDeclPrefix(convertedArgName);
         Array.lowerNewArray(stringtype, Emitter.of(argName + ".length"), jsLTools);
         jsLTools.genResolvedVarDeclPostfix(null);

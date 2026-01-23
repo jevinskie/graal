@@ -24,11 +24,12 @@
  */
 package com.oracle.svm.core.os;
 
-import static jdk.graal.compiler.word.Word.nullPointer;
-import static jdk.graal.compiler.word.Word.zero;
+import static org.graalvm.word.impl.Word.nullPointer;
+import static org.graalvm.word.impl.Word.zero;
 
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.type.WordPointer;
 import org.graalvm.word.UnsignedWord;
 
@@ -41,8 +42,7 @@ import com.oracle.svm.core.c.function.CEntryPointErrors;
 import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
 import com.oracle.svm.core.util.UnsignedUtils;
-
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.Word;
 
 public class OSCommittedMemoryProvider extends ChunkBasedCommittedMemoryProvider {
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -51,15 +51,16 @@ public class OSCommittedMemoryProvider extends ChunkBasedCommittedMemoryProvider
 
     @Override
     @Uninterruptible(reason = "Still being initialized.")
-    public int initialize(WordPointer heapBasePointer, IsolateArguments arguments) {
+    public int initialize(WordPointer heapBaseOut, IsolateArguments arguments) {
         if (!SubstrateOptions.SpawnIsolates.getValue()) {
             int result = protectSingleIsolateImageHeap();
             if (result == CEntryPointErrors.NO_ERROR) {
-                heapBasePointer.write(Isolates.IMAGE_HEAP_BEGIN.get());
+                heapBaseOut.write(Isolates.IMAGE_HEAP_BEGIN.get());
             }
             return result;
         }
-        return ImageHeapProvider.get().initialize(nullPointer(), zero(), heapBasePointer, nullPointer());
+        WordPointer imageHeapEndOut = StackValue.get(WordPointer.class);
+        return ImageHeapProvider.get().initialize(nullPointer(), zero(), heapBaseOut, imageHeapEndOut);
     }
 
     @Override
@@ -69,6 +70,12 @@ public class OSCommittedMemoryProvider extends ChunkBasedCommittedMemoryProvider
             return CEntryPointErrors.NO_ERROR;
         }
         return ImageHeapProvider.get().freeImageHeap(KnownIntrinsics.heapBase());
+    }
+
+    @Override
+    public UnsignedWord getCollectedHeapAddressSpaceSize() {
+        assert getReservedAddressSpaceSize().aboveOrEqual(ImageHeapProvider.get().getImageHeapEndOffsetInAddressSpace());
+        return getReservedAddressSpaceSize().subtract(ImageHeapProvider.get().getImageHeapEndOffsetInAddressSpace());
     }
 
     @Override

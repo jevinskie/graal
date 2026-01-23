@@ -37,7 +37,7 @@ public class JavaDocExamplesTest {
                     "User message: Initialization completed.", "3",
                     // JSObject
                     "3.2", "4.8", "5.4",
-                    "JavaScript<function;", "JavaScript<number; 5.0>",
+                    "JavaScript<function;", "JavaScript<number; 5>",
                     "0.3", "0.4", "0.5", "Type mismatch: 'whoops' cannot be coerced to 'Double'.",
                     "1.5, 2.5", "0.0, 0.0", "1.25, 0.5",
                     "640x480",
@@ -189,7 +189,7 @@ class Rectangle extends JSObject {
 
 @JS.Export
 class Randomizer extends JSObject {
-    private Random rng = new Random(719513L);
+    protected Random rng = new Random(719513L);
 
     public byte[] randomBytes(int length) {
         byte[] bytes = new byte[length];

@@ -34,6 +34,7 @@ import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.AlwaysInline;
 import com.oracle.svm.core.Uninterruptible;
@@ -66,7 +67,6 @@ import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.graph.Node.NodeIntrinsic;
 import jdk.graal.compiler.nodes.extended.MembarNode;
 import jdk.graal.compiler.nodes.java.ArrayLengthNode;
-import jdk.graal.compiler.word.Word;
 
 /** Helper for allocating and accessing {@link StoredContinuation} instances. */
 public final class StoredContinuationAccess {
@@ -114,6 +114,11 @@ public final class StoredContinuationAccess {
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static CodePointer getIP(StoredContinuation s) {
         return s.ip;
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public static boolean isInitialized(StoredContinuation s) {
+        return s.ip.isNonNull();
     }
 
     public static int allocateToYield(Target_jdk_internal_vm_Continuation c, Pointer baseSp, Pointer sp, CodePointer ip) {
@@ -185,9 +190,9 @@ public final class StoredContinuationAccess {
 
     @AlwaysInline("De-virtualize calls to ObjectReferenceVisitor")
     @Uninterruptible(reason = "StoredContinuation must not move.", callerMustBe = true)
-    public static boolean walkReferences(StoredContinuation s, ObjectReferenceVisitor visitor) {
+    public static void walkReferences(StoredContinuation s, ObjectReferenceVisitor visitor) {
         if (!shouldWalkContinuation(s)) {
-            return true;
+            return;
         }
 
         JavaStackWalk walk = StackValue.get(JavaStackWalker.sizeOfJavaStackWalk());
@@ -208,8 +213,6 @@ public final class StoredContinuationAccess {
                 CodeInfoAccess.releaseTether(untetheredCodeInfo, tether);
             }
         }
-
-        return true;
     }
 
     @AlwaysInline("De-virtualize calls to visitor.")

@@ -42,6 +42,9 @@ import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TimerTask;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinTask;
 import java.util.stream.Collectors;
 
 import org.graalvm.collections.Pair;
@@ -52,18 +55,19 @@ import org.graalvm.nativeimage.c.type.CCharPointerPointer;
 import com.oracle.graal.pointsto.infrastructure.SubstitutionProcessor;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.graal.pointsto.util.AnalysisError.ParsingError;
-import com.oracle.graal.pointsto.util.GraalAccess;
 import com.oracle.graal.pointsto.util.ParallelExecutionException;
 import com.oracle.graal.pointsto.util.Timer;
 import com.oracle.graal.pointsto.util.Timer.StopTimer;
 import com.oracle.graal.pointsto.util.TimerCollection;
-import com.oracle.svm.core.FallbackExecutor;
 import com.oracle.svm.core.JavaMainWrapper;
 import com.oracle.svm.core.JavaMainWrapper.JavaMainSupport;
+import com.oracle.svm.core.JavaVersionUtil;
 import com.oracle.svm.core.OS;
 import com.oracle.svm.core.SubstrateOptions;
+import com.oracle.svm.core.imagelayer.LayeredImageOptions;
 import com.oracle.svm.core.option.HostedOptionKey;
 import com.oracle.svm.core.option.SubstrateOptionsParser;
+import com.oracle.svm.core.util.BasedOnJDKFile;
 import com.oracle.svm.core.util.ExitStatus;
 import com.oracle.svm.core.util.InterruptImageBuilding;
 import com.oracle.svm.core.util.UserError;
@@ -74,13 +78,13 @@ import com.oracle.svm.hosted.image.AbstractImage.NativeImageKind;
 import com.oracle.svm.hosted.imagelayer.HostedImageLayerBuildingSupport;
 import com.oracle.svm.hosted.option.HostedOptionParser;
 import com.oracle.svm.util.ClassUtil;
+import com.oracle.svm.util.GraalAccess;
 import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ModuleSupport;
 import com.oracle.svm.util.ReflectionUtil;
 import com.oracle.svm.util.ReflectionUtil.ReflectionUtilError;
 
 import jdk.graal.compiler.options.OptionValues;
-import jdk.graal.compiler.serviceprovider.JavaVersionUtil;
+import jdk.graal.compiler.vmaccess.VMAccess;
 import jdk.vm.ci.aarch64.AArch64;
 import jdk.vm.ci.amd64.AMD64;
 import jdk.vm.ci.code.Architecture;
@@ -89,12 +93,30 @@ import jdk.vm.ci.runtime.JVMCI;
 
 public class NativeImageGeneratorRunner {
 
-    private volatile NativeImageGenerator generator;
+    public static final String NATIVE_IMAGE_MODULE_PREFIX = "org.graalvm.nativeimage.";
     public static final String IMAGE_BUILDER_ARG_FILE_OPTION = "--image-args-file=";
+
+    private volatile NativeImageGenerator generator;
+
+    public enum BuildOutcome {
+        SUCCESSFUL,
+        FAILED,
+        STOPPED;
+
+        public boolean successful() {
+            return this.equals(SUCCESSFUL);
+        }
+    }
 
     public static void main(String[] args) {
         List<NativeImageGeneratorRunnerProvider> providers = new ArrayList<>();
         ServiceLoader.load(NativeImageGeneratorRunnerProvider.class).forEach(providers::add);
+
+        var ueh = ForkJoinPool.commonPool().getUncaughtExceptionHandler();
+        if (!(ueh instanceof CommonPoolUncaughtExceptionHandler)) {
+            throw VMError.shouldNotReachHere("Unable to install " + CommonPoolUncaughtExceptionHandler.class.getName() +
+                            " via java.util.concurrent.ForkJoinPool.common.exceptionHandler system property");
+        }
 
         if (providers.isEmpty()) {
             new NativeImageGeneratorRunner().start(args);
@@ -155,10 +177,11 @@ public class NativeImageGeneratorRunner {
             exitStatus = ExitStatus.BUILDER_ERROR.getValue();
         } catch (InterruptImageBuilding e) {
             if (e.getReason().isPresent()) {
-                if (!e.getReason().get().isEmpty()) {
-                    LogUtils.info(e.getReason().get());
+                exitStatus = e.getExitStatus().orElse(ExitStatus.OK).getValue();
+                String reason = e.getReason().get();
+                if (!reason.isEmpty()) {
+                    LogUtils.info(reason);
                 }
-                exitStatus = ExitStatus.OK.getValue();
             } else {
                 exitStatus = ExitStatus.BUILDER_INTERRUPT_WITHOUT_REASON.getValue();
             }
@@ -177,11 +200,7 @@ public class NativeImageGeneratorRunner {
 
     private static void checkBootModuleDependencies(boolean verbose) {
         Set<Module> allModules = ModuleLayer.boot().modules();
-        List<Module> builderModules = allModules.stream().filter(m -> m.isNamed() && m.getName().startsWith("org.graalvm.nativeimage.")).toList();
-        Set<Module> transitiveBuilderModules = new LinkedHashSet<>();
-        for (Module svmModule : builderModules) {
-            transitiveReaders(svmModule, allModules, transitiveBuilderModules);
-        }
+        Set<Module> transitiveBuilderModules = getNativeImageBuilderModules();
         if (verbose) {
             System.out.println(transitiveBuilderModules.stream()
                             .map(Module::getName)
@@ -220,6 +239,28 @@ public class NativeImageGeneratorRunner {
         if (!unexpectedBuilderDependencies.isEmpty()) {
             throw VMError.shouldNotReachHere("Unexpected image builder module-dependencies: " + String.join(", ", unexpectedBuilderDependencies));
         }
+    }
+
+    /**
+     * Returns what are considered native-image builder modules: those are the modules with prefix
+     * {@value NativeImageGeneratorRunner#NATIVE_IMAGE_MODULE_PREFIX} and their reader modules.
+     */
+    public static Set<Module> getNativeImageBuilderModules() {
+        final var allModules = ModuleLayer.boot().modules();
+        List<Module> builderModules = new ArrayList<>(allModules.size());
+        for (Module m : allModules) {
+            if (m.isNamed()) {
+                if (m.getName().startsWith(NATIVE_IMAGE_MODULE_PREFIX)) {
+                    builderModules.add(m);
+                }
+            }
+        }
+
+        Set<Module> transitiveBuilderModules = new LinkedHashSet<>();
+        for (Module svmModule : builderModules) {
+            transitiveReaders(svmModule, allModules, transitiveBuilderModules);
+        }
+        return transitiveBuilderModules;
     }
 
     public static void transitiveReaders(Module readModule, Set<Module> potentialReaders, Set<Module> actualReaders) {
@@ -265,6 +306,13 @@ public class NativeImageGeneratorRunner {
         }
     }
 
+    private static VMAccess getVmAccess(String[] classpath, String[] modulepath) {
+        VMAccess.Builder builder = GraalAccess.getVmAccessBuilder();
+        builder.classPath(List.of(classpath));
+        builder.modulePath(List.of(modulepath));
+        return builder.build();
+    }
+
     /**
      * Installs a class loader hierarchy that resolves classes and resources available in
      * {@code classpath} and {@code modulepath}. The parent for the installed {@code ClassLoader} is
@@ -282,6 +330,8 @@ public class NativeImageGeneratorRunner {
      *         via {@link NativeImageClassLoaderSupport#getClassLoader()}.
      */
     public static ImageClassLoader installNativeImageClassLoader(String[] classpath, String[] modulepath, List<String> arguments) {
+        VMAccess vmAccess = getVmAccess(classpath, modulepath);
+        GraalAccess.plantConfiguration(vmAccess);
         NativeImageSystemClassLoader nativeImageSystemClassLoader = NativeImageSystemClassLoader.singleton();
         NativeImageClassLoaderSupport nativeImageClassLoaderSupport = new NativeImageClassLoaderSupport(nativeImageSystemClassLoader.defaultSystemClassLoader, classpath, modulepath);
         nativeImageClassLoaderSupport.setupHostedOptionParser(arguments);
@@ -313,7 +363,39 @@ public class NativeImageGeneratorRunner {
          */
         NativeImageOptions.setCommonPoolParallelism(nativeImageClassLoaderSupport.getParsedHostedOptions());
 
-        return new ImageClassLoader(NativeImageGenerator.getTargetPlatform(nativeImageClassLoader), nativeImageClassLoaderSupport);
+        checkCommonPool(nativeImageClassLoader);
+
+        return new ImageClassLoader(NativeImageGenerator.getTargetPlatform(nativeImageClassLoader), nativeImageClassLoaderSupport, vmAccess);
+    }
+
+    /**
+     * Check that tasks executing in the {@linkplain ForkJoinPool#commonPool() common fork-join
+     * pool} see the expected class loader as {@linkplain Thread#getContextClassLoader context class
+     * loader}.
+     */
+    private static void checkCommonPool(ClassLoader expectedLoader) {
+        Runnable check = () -> {
+            ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
+            VMError.guarantee(contextClassLoader == expectedLoader,
+                            "Threads of the common fork-join pool don't see the expected context class loader. " +
+                                            "Expected %s got %s. %n" +
+                                            "To fix this error add -Djava.util.concurrent.ForkJoinPool.common.threadFactory=%s",
+                            expectedLoader, contextClassLoader, NativeImageSystemClassLoader.NativeImageForkJoinWorkerThreadFactory.class.getName());
+        };
+        int parallelism = ForkJoinPool.commonPool().getParallelism();
+        List<ForkJoinTask<?>> tasks = new ArrayList<>(parallelism);
+        for (int i = 0; i < parallelism; i++) {
+            tasks.add(ForkJoinPool.commonPool().submit(check));
+        }
+        try {
+            for (ForkJoinTask<?> task : tasks) {
+                task.get();
+            }
+        } catch (ExecutionException e) {
+            throw VMError.shouldNotReachHere(e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public static List<String> extractDriverArguments(List<String> args) {
@@ -374,7 +456,6 @@ public class NativeImageGeneratorRunner {
         return OS.LINUX.isCurrent() || OS.DARWIN.isCurrent() || OS.WINDOWS.isCurrent();
     }
 
-    @SuppressWarnings("try")
     private int buildImage(ImageClassLoader classLoader) {
         if (!verifyValidJavaVersionAndPlatform()) {
             return ExitStatus.BUILDER_ERROR.getValue();
@@ -394,10 +475,10 @@ public class NativeImageGeneratorRunner {
 
         ProgressReporter reporter = new ProgressReporter(parsedHostedOptions);
         Throwable unhandledThrowable = null;
-        boolean wasSuccessfulBuild = false;
-        try (StopTimer ignored = totalTimer.start()) {
+        BuildOutcome buildOutcome = BuildOutcome.FAILED;
+        try (StopTimer _ = totalTimer.start()) {
             Timer classlistTimer = timerCollection.get(TimerCollection.Registry.CLASSLIST);
-            try (StopTimer ignored1 = classlistTimer.start()) {
+            try (StopTimer _ = classlistTimer.start()) {
                 classLoader.loadAllClasses();
             }
             if (imageName.length() == 0) {
@@ -415,9 +496,9 @@ public class NativeImageGeneratorRunner {
                 if (isStaticExecutable && isSharedLibrary) {
                     reportConflictingOptions(SubstrateOptions.SharedLibrary, SubstrateOptions.StaticExecutable);
                 } else if (isStaticExecutable && layerCreateOptionEnabled) {
-                    reportConflictingOptions(SubstrateOptions.StaticExecutable, SubstrateOptions.LayerCreate);
+                    reportConflictingOptions(SubstrateOptions.StaticExecutable, LayeredImageOptions.LayerCreate);
                 } else if (isSharedLibrary && layerCreateOptionEnabled) {
-                    reportConflictingOptions(SubstrateOptions.SharedLibrary, SubstrateOptions.LayerCreate);
+                    reportConflictingOptions(SubstrateOptions.SharedLibrary, LayeredImageOptions.LayerCreate);
                 } else if (isSharedLibrary) {
                     imageKind = NativeImageKind.SHARED_LIBRARY;
                 } else if (layerCreateOptionEnabled) {
@@ -475,7 +556,7 @@ public class NativeImageGeneratorRunner {
                     }
                     try {
                         /*
-                         * First look for an main method with the C-level signature for arguments.
+                         * First look for a main method with the C-level signature for arguments.
                          */
                         mainEntryPoint = mainClass.getDeclaredMethod(mainEntryPointName, int.class, CCharPointerPointer.class);
                     } catch (NoSuchMethodException ignored2) {
@@ -484,19 +565,9 @@ public class NativeImageGeneratorRunner {
                          * If no C-level main method was found, look for a Java-level main method
                          * and use our wrapper to invoke it.
                          */
-                        if ("main".equals(mainEntryPointName) && JavaMainWrapper.instanceMainMethodSupported()) {
-                            // Instance main method only supported for "main" method name
+                        if ("main".equals(mainEntryPointName)) {
                             try {
-                                /*
-                                 * JDK-8306112: Implementation of JEP 445: Unnamed Classes and
-                                 * Instance Main Methods (Preview)
-                                 *
-                                 * MainMethodFinder will perform all the necessary checks
-                                 */
-                                String mainMethodFinderClassName = JavaVersionUtil.JAVA_SPEC >= 22 ? "jdk.internal.misc.MethodFinder" : "jdk.internal.misc.MainMethodFinder";
-                                Class<?> mainMethodFinder = ReflectionUtil.lookupClass(false, mainMethodFinderClassName);
-                                Method findMainMethod = ReflectionUtil.lookupMethod(mainMethodFinder, "findMainMethod", Class.class);
-                                javaMainMethod = (Method) findMainMethod.invoke(null, mainClass);
+                                javaMainMethod = findDefaultJavaMainMethod(mainClass);
                             } catch (InvocationTargetException ex) {
                                 assert ex.getTargetException() instanceof NoSuchMethodException;
                                 throw UserError.abort(ex.getCause(),
@@ -544,21 +615,20 @@ public class NativeImageGeneratorRunner {
 
                 generator = createImageGenerator(classLoader, optionParser, mainEntryPointData, reporter);
                 generator.run(entryPoints, javaMainSupport, imageName, imageKind, SubstitutionProcessor.IDENTITY, optionParser.getRuntimeOptionNames(), timerCollection);
-                wasSuccessfulBuild = true;
+                buildOutcome = BuildOutcome.SUCCESSFUL;
             } finally {
-                if (!wasSuccessfulBuild) {
+                if (!buildOutcome.successful()) {
                     reporter.printUnsuccessfulInitializeEnd();
                 }
             }
         } catch (InterruptImageBuilding e) {
-            throw e;
-        } catch (FallbackFeature.FallbackImageRequest e) {
-            if (FallbackExecutor.class.getName().equals(SubstrateOptions.Class.getValue())) {
-                NativeImageGeneratorRunner.reportFatalError(e, "FallbackImageRequest while building fallback image.");
-                return ExitStatus.BUILDER_ERROR.getValue();
+            Optional<ExitStatus> exitStatus = e.getExitStatus();
+            if (exitStatus.isPresent()) {
+                if (exitStatus.get().equals(ExitStatus.REBUILD_AFTER_ANALYSIS)) {
+                    buildOutcome = BuildOutcome.STOPPED;
+                }
             }
-            reportUserException(e, parsedHostedOptions);
-            return ExitStatus.FALLBACK_IMAGE.getValue();
+            throw e;
         } catch (ParsingError e) {
             NativeImageGeneratorRunner.reportFatalError(e);
             return ExitStatus.BUILDER_ERROR.getValue();
@@ -579,34 +649,49 @@ public class NativeImageGeneratorRunner {
                     hasUserError = true;
                 }
             }
-            if (hasUserError) {
-                return ExitStatus.BUILDER_ERROR.getValue();
-            }
 
-            if (pee.getExceptions().size() > 1) {
-                System.out.println(pee.getExceptions().size() + " fatal errors detected:");
-            }
-            for (Throwable exception : pee.getExceptions()) {
-                NativeImageGeneratorRunner.reportFatalError(exception);
+            if (!hasUserError) {
+                unhandledThrowable = pee;
             }
             return ExitStatus.BUILDER_ERROR.getValue();
         } catch (Throwable e) {
             unhandledThrowable = e;
             return ExitStatus.BUILDER_ERROR.getValue();
         } finally {
-            reportEpilog(imageName, reporter, classLoader, wasSuccessfulBuild, unhandledThrowable, parsedHostedOptions);
+            reportEpilog(imageName, reporter, classLoader, buildOutcome, unhandledThrowable, parsedHostedOptions);
             NativeImageGenerator.clearSystemPropertiesForImage();
             ImageSingletonsSupportImpl.HostedManagement.clear();
         }
         return ExitStatus.OK.getValue();
     }
 
+    /*
+     * Finds the main method using the {@code jdk.internal.misc.MethodFinder}.
+     *
+     * The {@code MethodFinder} was introduced by JDK-8344706 (Implement JEP 512: Compact Source
+     * Files and Instance Main Methods) and will perform all the necessary checks.
+     */
+    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+24/src/java.base/share/classes/jdk/internal/misc/MethodFinder.java#L45-L106")
+    private static Method findDefaultJavaMainMethod(Class<?> mainClass) throws IllegalAccessException, InvocationTargetException {
+        Class<?> mainMethodFinder = ReflectionUtil.lookupClass(false, "jdk.internal.misc.MethodFinder");
+        Method findMainMethod = ReflectionUtil.lookupMethod(mainMethodFinder, "findMainMethod", Class.class);
+        /*
+         * We are using Method.invoke and throwing checked exceptions on purpose instead of
+         * ReflectionUtil to issue a proper error message.
+         */
+        Method invoke = (Method) findMainMethod.invoke(null, mainClass);
+        /*
+         * Use ReflectionUtil get a Method object with the right accessibility.
+         */
+        return ReflectionUtil.lookupMethod(invoke.getDeclaringClass(), invoke.getName(), invoke.getParameterTypes());
+    }
+
     private static void reportConflictingOptions(HostedOptionKey<Boolean> o1, HostedOptionKey<?> o2) {
         throw UserError.abort("Cannot pass both options: %s and %s", SubstrateOptionsParser.commandArgument(o1, "+"), SubstrateOptionsParser.commandArgument(o2, "+"));
     }
 
-    protected void reportEpilog(String imageName, ProgressReporter reporter, ImageClassLoader classLoader, boolean wasSuccessfulBuild, Throwable unhandledThrowable, OptionValues parsedHostedOptions) {
-        reporter.printEpilog(Optional.ofNullable(imageName), Optional.ofNullable(generator), classLoader, wasSuccessfulBuild, Optional.ofNullable(unhandledThrowable), parsedHostedOptions);
+    protected void reportEpilog(String imageName, ProgressReporter reporter, ImageClassLoader classLoader, BuildOutcome buildOutcome, Throwable unhandledThrowable, OptionValues parsedHostedOptions) {
+        reporter.printEpilog(Optional.ofNullable(imageName), Optional.ofNullable(generator), classLoader, buildOutcome, Optional.ofNullable(unhandledThrowable), parsedHostedOptions);
     }
 
     protected NativeImageGenerator createImageGenerator(ImageClassLoader classLoader, HostedOptionParser optionParser, Pair<Method, CEntryPointData> mainEntryPointData, ProgressReporter reporter) {
@@ -730,41 +815,5 @@ public class NativeImageGeneratorRunner {
 
     public int build(ImageClassLoader imageClassLoader) {
         return buildImage(imageClassLoader);
-    }
-
-    /**
-     * Command line entry point when running on JDK9+. This is required to dynamically export Graal
-     * to SVM and it requires {@code --add-exports=java.base/jdk.internal.module=ALL-UNNAMED} to be
-     * on the VM command line.
-     *
-     * Note: This is a workaround until GR-16855 is resolved.
-     */
-    public static class JDK9Plus {
-
-        public static void main(String[] args) {
-            setModuleAccesses();
-            NativeImageGeneratorRunner.main(args);
-        }
-
-        public static void setModuleAccesses() {
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "org.graalvm.word");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "org.graalvm.nativeimage");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "org.graalvm.collections");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "org.graalvm.polyglot");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "org.graalvm.truffle");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "jdk.internal.vm.ci");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "jdk.graal.compiler");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, true, "jdk.graal.compiler.management");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, true, "com.oracle.graal.graal_enterprise");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "java.base", "jdk.internal.loader");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "java.base", "jdk.internal.misc");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "java.base", "sun.text.spi");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "java.base", "sun.reflect.annotation");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "java.base", "sun.security.jca");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "jdk.jdeps", "com.sun.tools.classfile");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "org.graalvm.truffle.runtime");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, false, "org.graalvm.truffle.compiler");
-            ModuleSupport.accessPackagesToClass(ModuleSupport.Access.OPEN, null, true, "com.oracle.truffle.enterprise");
-        }
     }
 }

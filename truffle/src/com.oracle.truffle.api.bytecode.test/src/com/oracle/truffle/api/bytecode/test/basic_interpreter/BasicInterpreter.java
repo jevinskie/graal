@@ -45,6 +45,7 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerAsserts;
@@ -53,6 +54,7 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.bytecode.BytecodeConfig;
+import com.oracle.truffle.api.bytecode.BytecodeFrame;
 import com.oracle.truffle.api.bytecode.BytecodeLocation;
 import com.oracle.truffle.api.bytecode.BytecodeNode;
 import com.oracle.truffle.api.bytecode.BytecodeRootNode;
@@ -81,6 +83,7 @@ import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.exception.AbstractTruffleException;
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.FrameDescriptor;
+import com.oracle.truffle.api.frame.FrameInstance;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -92,6 +95,7 @@ import com.oracle.truffle.api.nodes.ExplodeLoop;
 import com.oracle.truffle.api.nodes.IndirectCallNode;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.nodes.UnexpectedResultException;
 import com.oracle.truffle.api.source.SourceSection;
 
 /**
@@ -102,14 +106,17 @@ import com.oracle.truffle.api.source.SourceSection;
  */
 @GenerateBytecodeTestVariants({
                 @Variant(suffix = "Base", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
                                 enableYield = true, //
                                 enableMaterializedLocalAccesses = true, //
                                 enableSerialization = true, //
                                 enableTagInstrumentation = true, //
                                 enableSpecializationIntrospection = true, //
+                                enableInstructionRewriting = false, //
                                 allowUnsafe = false, //
                                 variadicStackLimit = "4")),
                 @Variant(suffix = "Unsafe", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
                                 enableYield = true, //
                                 enableMaterializedLocalAccesses = true, //
                                 enableSerialization = true, //
@@ -117,6 +124,7 @@ import com.oracle.truffle.api.source.SourceSection;
                                 enableSpecializationIntrospection = true, //
                                 variadicStackLimit = "8")),
                 @Variant(suffix = "WithUncached", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
                                 enableYield = true, //
                                 enableMaterializedLocalAccesses = true, //
                                 enableSerialization = true, //
@@ -126,6 +134,7 @@ import com.oracle.truffle.api.source.SourceSection;
                                 enableSpecializationIntrospection = true, //
                                 variadicStackLimit = "16")),
                 @Variant(suffix = "WithBE", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
                                 enableYield = true, //
                                 enableMaterializedLocalAccesses = true, //
                                 enableSerialization = true, //
@@ -134,6 +143,7 @@ import com.oracle.truffle.api.source.SourceSection;
                                 boxingEliminationTypes = {boolean.class, long.class}, //
                                 variadicStackLimit = "4")),
                 @Variant(suffix = "WithOptimizations", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
                                 enableYield = true, //
                                 enableMaterializedLocalAccesses = true, //
                                 enableSerialization = true, //
@@ -142,6 +152,7 @@ import com.oracle.truffle.api.source.SourceSection;
                                 defaultLocalValue = "LOCAL_DEFAULT_VALUE", //
                                 variadicStackLimit = "8")),
                 @Variant(suffix = "WithRootScoping", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
                                 enableYield = true, //
                                 enableMaterializedLocalAccesses = true, //
                                 enableSerialization = true, //
@@ -151,6 +162,7 @@ import com.oracle.truffle.api.source.SourceSection;
                                 defaultLocalValue = "LOCAL_DEFAULT_VALUE", //
                                 variadicStackLimit = "16")),
                 @Variant(suffix = "WithStoreBytecodeIndexInFrame", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
                                 enableYield = true, //
                                 enableMaterializedLocalAccesses = true, //
                                 enableSerialization = true, //
@@ -163,6 +175,7 @@ import com.oracle.truffle.api.source.SourceSection;
                                 variadicStackLimit = "4")),
                 // A typical "production" configuration with all of the bells and whistles.
                 @Variant(suffix = "ProductionBlockScoping", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
                                 enableYield = true, //
                                 enableMaterializedLocalAccesses = true, //
                                 enableSerialization = true, //
@@ -173,6 +186,7 @@ import com.oracle.truffle.api.source.SourceSection;
                                 boxingEliminationTypes = {boolean.class, long.class}, //
                                 variadicStackLimit = "8")),
                 @Variant(suffix = "ProductionRootScoping", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
                                 enableYield = true, //
                                 enableMaterializedLocalAccesses = true, //
                                 enableSerialization = true, //
@@ -279,7 +293,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation(javadoc = "Exercises interop on the operand.")
+    @Operation(javadoc = "Exercises interop on the operand.", storeBytecodeIndex = true)
     static final class ToString {
         @Specialization(limit = "2")
         public static Object doForeignObject(Object value,
@@ -293,7 +307,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     @ConstantOperand(type = BasicInterpreter.class)
     static final class Call {
 
@@ -347,7 +361,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
     static final class ThrowOperation {
         @Specialization
         public static Object perform(long value,
@@ -382,7 +396,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
     @ConstantOperand(type = LocalAccessor.class)
     static final class TeeLocal {
         @Specialization
@@ -418,7 +432,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
     @ConstantOperand(type = LocalRangeAccessor.class)
     static final class TeeLocalRange {
         @Specialization
@@ -466,7 +480,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
     @ConstantOperand(type = MaterializedLocalAccessor.class)
     static final class TeeMaterializedLocal {
         @Specialization
@@ -503,7 +517,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
     }
 
     @SuppressWarnings("unused")
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class Invoke {
         @Specialization(guards = {"callTargetMatches(root.getCallTarget(), callNode.getCallTarget())"}, limit = "1")
         public static Object doRootNode(BasicInterpreter root, @Variadic Object[] args, @Cached("create(root.getCallTarget())") DirectCallNode callNode) {
@@ -541,7 +555,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class InvokeRecursive {
         @Specialization(guards = "true", excludeForUncached = true)
         public static Object doRootNode(@Variadic Object[] args, @Cached("create($rootNode.getCallTarget())") DirectCallNode callNode) {
@@ -559,6 +573,14 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         @Specialization
         public static MaterializedFrame materialize(VirtualFrame frame) {
             return frame.materialize();
+        }
+    }
+
+    @Operation(storeBytecodeIndex = false)
+    public static final class MaterializeSources {
+        @Specialization
+        public static void materialize(@Bind BytecodeNode bytecodeNode) {
+            bytecodeNode.ensureSourceInformation();
         }
     }
 
@@ -595,7 +617,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class GetSourcePosition {
         @Specialization
         public static SourceSection doOperation(VirtualFrame frame,
@@ -605,7 +627,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class EnsureAndGetSourcePosition {
         @Specialization
         public static SourceSection doOperation(VirtualFrame frame, boolean ensure,
@@ -621,7 +643,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class GetSourcePositions {
         @Specialization
         public static SourceSection[] doOperation(VirtualFrame frame,
@@ -631,7 +653,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
     @ConstantOperand(type = long.class) // (actually int, but serialization works with longs)
     public static final class CopyLocalsToFrame {
         @Specialization(guards = {"length != 0"})
@@ -653,7 +675,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class GetBytecodeLocation {
         // Note: this is just to test the API. You can bind the BytecodeLocation directly.
         @Specialization
@@ -665,7 +687,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class CollectBytecodeLocations {
         @Specialization
         public static List<BytecodeLocation> perform(
@@ -693,7 +715,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class CollectSourceLocations {
         @Specialization
         public static List<SourceSection> perform(
@@ -717,7 +739,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class CollectAllSourceLocations {
         @Specialization
         public static List<SourceSection[]> perform(
@@ -741,7 +763,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = true)
     public static final class Continue {
         public static final int LIMIT = 3;
 
@@ -760,11 +782,61 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
     public static final class CurrentLocation {
         @Specialization
         public static BytecodeLocation perform(@Bind BytecodeLocation location) {
             return location;
+        }
+    }
+
+    @Operation(storeBytecodeIndex = true)
+    @SuppressWarnings("truffle-interpreted-performance")
+    public static final class CaptureFrame {
+        private static final Object FRAME_UNAVAILABLE = new Object();
+
+        @Specialization
+        public static BytecodeFrame perform(int skipFrames, FrameInstance.FrameAccess access) {
+            Object frameWalkResult = Truffle.getRuntime().iterateFrames(frameInstance -> {
+                BytecodeFrame result = BytecodeFrame.get(frameInstance, access);
+                if (result == null) {
+                    // Return a sentinel value so that frame walking doesn't continue.
+                    return FRAME_UNAVAILABLE;
+                }
+                return result;
+            }, skipFrames);
+
+            return frameWalkResult == FRAME_UNAVAILABLE ? null : (BytecodeFrame) frameWalkResult;
+        }
+    }
+
+    @Operation(storeBytecodeIndex = true)
+    @SuppressWarnings("truffle-interpreted-performance")
+    public static final class CaptureNonVirtualFrame {
+        private static final Object FRAME_UNAVAILABLE = new Object();
+
+        @Specialization
+        public static BytecodeFrame perform(int skipFrames) {
+            Object frameWalkResult = Truffle.getRuntime().iterateFrames(frameInstance -> {
+                BytecodeFrame result = BytecodeFrame.getNonVirtual(frameInstance);
+                if (result == null) {
+                    // Return a sentinel value so that frame walking doesn't continue.
+                    return FRAME_UNAVAILABLE;
+                }
+                return result;
+            }, skipFrames);
+
+            return frameWalkResult == FRAME_UNAVAILABLE ? null : (BytecodeFrame) frameWalkResult;
+        }
+    }
+
+    // Special operation that forces its operand to escape.
+    @Operation
+    public static final class Blackhole {
+        @Specialization
+        @TruffleBoundary
+        public static void perform(@SuppressWarnings("unused") Object value) {
+            // do nothing
         }
     }
 
@@ -773,6 +845,21 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         @Specialization
         public static void perform() {
             System.out.println("here!");
+        }
+    }
+
+    @Instrumentation(storeBytecodeIndex = false)
+    @ConstantOperand(type = LocalAccessor.class)
+    public static final class IncrementLocal {
+        @Specialization
+        public static void doIncrement(VirtualFrame frame,
+                        LocalAccessor accessor,
+                        @Bind BytecodeNode bytecode) {
+            try {
+                accessor.setLong(bytecode, frame, 1L + accessor.getLong(bytecode, frame));
+            } catch (UnexpectedResultException ex) {
+                CompilerDirectives.shouldNotReachHere(ex);
+            }
         }
     }
 
@@ -792,7 +879,25 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
+    public static final class EnableIncrementLocalInstrumentation {
+        @Specialization
+        public static void doEnable(
+                        @Bind BasicInterpreter root,
+                        @Cached(value = "getConfig(root)", allowUncached = true, neverDefault = true) BytecodeConfig config) {
+            root.getRootNodes().update(config);
+        }
+
+        @TruffleBoundary
+        protected static BytecodeConfig getConfig(BasicInterpreter root) {
+            BytecodeConfig.Builder configBuilder = AbstractBasicInterpreterTest.lookupVariant(root).newConfigBuilder();
+            configBuilder.addInstrumentation(IncrementLocal.class);
+            return configBuilder.build();
+        }
+
+    }
+
+    @Operation(storeBytecodeIndex = false)
     public static final class EnableIncrementValueInstrumentation {
         @Specialization
         public static void doEnable(
@@ -803,7 +908,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
         @TruffleBoundary
         protected static BytecodeConfig getConfig(BasicInterpreter root) {
-            BytecodeConfig.Builder configBuilder = BasicInterpreterBuilder.invokeNewConfigBuilder(root.getClass());
+            BytecodeConfig.Builder configBuilder = AbstractBasicInterpreterTest.lookupVariant(root).newConfigBuilder();
             configBuilder.addInstrumentation(IncrementValue.class);
             return configBuilder.build();
         }
@@ -820,12 +925,12 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
     @Operation
     static final class Less {
         @Specialization
-        static boolean doInts(long left, long right) {
+        static boolean doLongs(long left, long right) {
             return left < right;
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
     public static final class EnableDoubleValueInstrumentation {
         @Specialization
         public static void doEnable(
@@ -836,7 +941,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
         @TruffleBoundary
         protected static BytecodeConfig getConfig(BasicInterpreter root) {
-            BytecodeConfig.Builder configBuilder = BasicInterpreterBuilder.invokeNewConfigBuilder(root.getClass());
+            BytecodeConfig.Builder configBuilder = AbstractBasicInterpreterTest.lookupVariant(root).newConfigBuilder();
             configBuilder.addInstrumentation(DoubleValue.class);
             return configBuilder.build();
         }
@@ -852,7 +957,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
                     int bytecodeIndex) {
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
     static final class ExplicitBindingsTest {
         @Specialization
         @SuppressWarnings("truffle")
@@ -876,7 +981,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation
+    @Operation(storeBytecodeIndex = false)
     static final class ImplicitBindingsTest {
         @Specialization
         public static Bindings doDefault(
@@ -900,7 +1005,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
     @Operation
     static final class Variadic0Operation {
         @Specialization
-        public static Object[] variadic(@Variadic Object[] args) {
+        public static Object[] doDefault(@Variadic Object[] args) {
             return args;
         }
     }
@@ -909,8 +1014,19 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
     static final class Variadic1Operation {
         @Specialization
         @SuppressWarnings("unused")
-        public static Object[] variadic(long arg0, @Variadic Object[] args) {
+        public static Object[] doDefault(long arg0, @Variadic Object[] args) {
             return args;
+        }
+    }
+
+    @Operation(storeBytecodeIndex = false)
+    @ConstantOperand(name = "f", type = Function.class)
+    static final class Run {
+        @SuppressWarnings("unchecked")
+        @Specialization
+        @TruffleBoundary
+        public static Object doDefault(Function<?, ?> supplier, @Bind BytecodeNode bc) {
+            return ((Function<Object, Object>) supplier).apply(bc);
         }
     }
 
@@ -918,7 +1034,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
     static final class VariadicOffsetOperation {
         @Specialization
         @SuppressWarnings("unused")
-        public static Object[] variadic(@Variadic(startOffset = 4) Object[] args) {
+        public static Object[] doDefault(@Variadic(startOffset = 4) Object[] args) {
             assertTrue(args.length >= 3);
             for (int i = 0; i < 4; i++) {
                 assertNull(args[i]);
@@ -933,7 +1049,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
         @Specialization
         @SuppressWarnings("unused")
-        public static Object[] pass(@Variadic Object[] args) {
+        public static Object[] doDefault(@Variadic Object[] args) {
             return args;
         }
     }
@@ -944,11 +1060,97 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
         @Specialization
         @SuppressWarnings("unused")
-        public static Object[] pass() {
+        public static Object[] doDefault() {
             return null;
         }
     }
 
+    @Operation
+    @Variadic
+    static final class DynamicVariadicNums {
+
+        @Specialization
+        @SuppressWarnings("unused")
+        public static Object[] doDefault(long a) {
+            Object[] res = new Long[(int) a];
+            for (long i = 0; i < a; i++) {
+                res[(int) i] = i;
+            }
+            return res;
+        }
+    }
+
+    @Operation
+    static final class VariadicAddInt {
+        @Specialization
+        @SuppressWarnings("unused")
+        public static long doDefault(long a, @Variadic Object[] args) {
+            long result = 0;
+            for (Object arg : args) {
+                if (arg instanceof Long i) {
+                    result += i * a;
+                } else {
+                    CompilerDirectives.transferToInterpreterAndInvalidate();
+                    throw new AssertionError("Expected 'arg' to be long, found: " + arg.getClass().getSimpleName());
+                }
+            }
+            return result;
+        }
+    }
+
+    @Operation
+    static final class VariadicAddLArr {
+        @Specialization
+        @SuppressWarnings("unused")
+        public static long doDefault(long[] o, @Variadic Object[] args) {
+            long result = 0;
+            for (Object arg : args) {
+                if (arg instanceof Long i) {
+                    result += i;
+                } else {
+                    CompilerDirectives.transferToInterpreterAndInvalidate();
+                    throw new AssertionError("Expected 'arg' to be long, found: " + arg.getClass().getSimpleName());
+                }
+            }
+            return result;
+        }
+    }
+
+    @Operation
+    static final class VariadicAddIntLArr {
+        @Specialization
+        @SuppressWarnings("unused")
+        public static long doDefault(long a, long[] o, @Variadic Object[] args) {
+            long result = 0;
+            for (Object arg : args) {
+                if (arg instanceof Long i) {
+                    result += i * a;
+                } else {
+                    CompilerDirectives.transferToInterpreterAndInvalidate();
+                    throw new AssertionError("Expected 'arg' to be long, found: " + arg.getClass().getSimpleName());
+                }
+            }
+            return result;
+        }
+    }
+
+    @Operation
+    static final class VariadicAddIntIntLArrLArr {
+        @Specialization
+        @SuppressWarnings("unused")
+        public static long doDefault(long a, long b, long[] o, long[] p, @Variadic Object[] args) {
+            long result = 0;
+            for (Object arg : args) {
+                if (arg instanceof Long i) {
+                    result += i * a * b;
+                } else {
+                    CompilerDirectives.transferToInterpreterAndInvalidate();
+                    throw new AssertionError("Expected 'arg' to be long, found: " + arg.getClass().getSimpleName());
+                }
+            }
+            return result;
+        }
+    }
 }
 
 class TestClosure {

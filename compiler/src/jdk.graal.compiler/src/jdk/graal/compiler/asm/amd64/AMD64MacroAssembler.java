@@ -25,9 +25,9 @@
 package jdk.graal.compiler.asm.amd64;
 
 import static jdk.graal.compiler.core.common.NumUtil.isByte;
+import static jdk.vm.ci.amd64.AMD64.rip;
 
 import java.util.function.IntConsumer;
-import java.util.function.Supplier;
 
 import jdk.graal.compiler.asm.Label;
 import jdk.graal.compiler.core.common.NumUtil;
@@ -297,7 +297,8 @@ public class AMD64MacroAssembler extends AMD64Assembler {
      * Non-atomic write of a 64-bit constant to memory. Do not use if the address might be a
      * volatile field!
      */
-    public final void movlong(AMD64Address dst, long src) {
+    public final void movlong(AMD64Address dst, long src, boolean annotateImm) {
+        GraalError.guarantee(!annotateImm, "patching not implemented for 8-byte stores");
         if (NumUtil.isInt(src)) {
             emitAMD64MIOp(AMD64MIOp.MOV, OperandSize.QWORD, dst, (int) src, false);
         } else {
@@ -498,6 +499,9 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         annotatePatchingImmediate(1, 4);
         emitByte(0xE9);
         emitInt(0);
+        if (isRecordingCodeSnippet()) {
+            abortRecordingCodeSnippet();
+        }
     }
 
     @SuppressWarnings("unused")
@@ -537,6 +541,14 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         }
     }
 
+    /**
+     * Intel macro fusion has specific operand constraints for {@code op}:
+     * <ul>
+     * <li>It can have either an immediate operand or a memory source operand, but not both.</li>
+     * <li>It cannot have a memory destination operand.</li>
+     * <li>It cannot have a RIP-relative memory operand.</li>
+     * </ul>
+     */
     private int applyMIOpAndJcc(AMD64MIOp op, OperandSize size, Register src, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp, boolean annotateImm,
                     IntConsumer applyBeforeFusedPair) {
         final int bytesToEmit = getPrefixInBytes(size, src, op.srcIsByte) + OPCODE_IN_BYTES + MODRM_IN_BYTES + op.immediateSize(size);
@@ -553,33 +565,9 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         return beforeJcc;
     }
 
-    private int applyMIOpAndJcc(AMD64MIOp op, OperandSize size, AMD64Address address, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp, boolean annotateImm,
-                    IntConsumer applyBeforeFusedPair) {
-        int bytesToEmit = getPrefixInBytes(size, address) + OPCODE_IN_BYTES + addressInBytes(address) + op.immediateSize(size);
-        // Address is "source" only if the op reads from memory.
-        if (op.isMemRead()) {
-            /**
-             * The extra bytes introduced by MemoryReadInterceptor are also included in the fused
-             * pair size, which may lead to imprecision. However, this does not affect the
-             * correctness of the Intel JCC erratum, as it ensures that both the instrumented logic
-             * and the fused pair remain within the 32-byte boundary. If the total size exceeds 32
-             * bytes, the assertion in alignFusedPair will detect it.
-             */
-            bytesToEmit += extraSourceAddressBytes(address);
-        }
-        alignFusedPair(branchTarget, isShortJmp, bytesToEmit);
-        final int beforeFusedPair = position();
-        if (applyBeforeFusedPair != null) {
-            applyBeforeFusedPair.accept(beforeFusedPair);
-        }
-        op.emit(this, size, address, imm32, annotateImm);
-        final int beforeJcc = position();
-        assert beforeFusedPair + bytesToEmit == beforeJcc : Assertions.errorMessage(beforeFusedPair, bytesToEmit, position());
-        jcc(cc, branchTarget, isShortJmp);
-        assert ensureWithinBoundary(beforeFusedPair);
-        return beforeJcc;
-    }
-
+    /**
+     * See {@link #applyMIOpAndJcc}.
+     */
     private int applyRMOpAndJcc(AMD64RMOp op, OperandSize size, Register src1, Register src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
         final int bytesToEmit = getPrefixInBytes(size, src1, op.dstIsByte, src2, op.srcIsByte) + OPCODE_IN_BYTES + MODRM_IN_BYTES;
         alignFusedPair(branchTarget, isShortJmp, bytesToEmit);
@@ -592,8 +580,12 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         return beforeJcc;
     }
 
+    /**
+     * See {@link #applyMIOpAndJcc}.
+     */
     private int applyRMOpAndJcc(AMD64RMOp op, OperandSize size, Register src1, AMD64Address src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp, IntConsumer applyBeforeFusedPair) {
-        /**
+        GraalError.guarantee(!rip.equals(src2.getBase()), "RIP-relative memory operand cannot be fused");
+        /*
          * The extra bytes introduced by MemoryReadInterceptor are also included in the fused pair
          * size, which may lead to imprecision. However, this does not affect the correctness of the
          * Intel JCC erratum, as it ensures that both the instrumented logic and the fused pair
@@ -614,6 +606,9 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         return beforeJcc;
     }
 
+    /**
+     * See {@link #applyMIOpAndJcc}.
+     */
     public int applyMOpAndJcc(AMD64MOp op, OperandSize size, Register dst, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
         final int bytesToEmit = getPrefixInBytes(size, dst, op.srcIsByte) + OPCODE_IN_BYTES + MODRM_IN_BYTES;
         alignFusedPair(branchTarget, isShortJmp, bytesToEmit);
@@ -637,11 +632,6 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final int testqAndJcc(Register src, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
         return applyMIOpAndJcc(AMD64MIOp.TEST, OperandSize.QWORD, src, imm32, cc, branchTarget, isShortJmp, false, null);
-    }
-
-    public final int testAndJcc(OperandSize size, AMD64Address src, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp, IntConsumer applyBeforeFusedPair) {
-        AMD64MIOp op = size == OperandSize.BYTE ? AMD64MIOp.TESTB : AMD64MIOp.TEST;
-        return applyMIOpAndJcc(op, size, src, imm32, cc, branchTarget, isShortJmp, false, applyBeforeFusedPair);
     }
 
     public final int testAndJcc(OperandSize size, Register src1, Register src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
@@ -676,74 +666,63 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     }
 
     public final int cmpAndJcc(OperandSize size, Register src, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyMIOpAndJcc(AMD64BinaryArithmetic.CMP.getMIOpcode(size, isByte(imm32)), size, src, imm32, cc, branchTarget, isShortJmp, false, null);
     }
 
     public final int cmpAndJcc(OperandSize size, Register src, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp, boolean annotateImm, IntConsumer applyBeforeFusedPair) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyMIOpAndJcc(AMD64BinaryArithmetic.CMP.getMIOpcode(size, isByte(imm32)), size, src, imm32, cc, branchTarget, isShortJmp, annotateImm, applyBeforeFusedPair);
     }
 
     public final int cmplAndJcc(Register src, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyMIOpAndJcc(AMD64BinaryArithmetic.CMP.getMIOpcode(OperandSize.DWORD, isByte(imm32)), OperandSize.DWORD, src, imm32, cc, branchTarget, isShortJmp, false, null);
     }
 
     public final int cmpqAndJcc(Register src, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyMIOpAndJcc(AMD64BinaryArithmetic.CMP.getMIOpcode(OperandSize.QWORD, isByte(imm32)), OperandSize.QWORD, src, imm32, cc, branchTarget, isShortJmp, false, null);
     }
 
-    public final int cmpAndJcc(OperandSize size, AMD64Address src, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
-        return applyMIOpAndJcc(AMD64BinaryArithmetic.CMP.getMIOpcode(size, NumUtil.isByte(imm32)), size, src, imm32, cc, branchTarget, isShortJmp, false, null);
-    }
-
-    public final int cmpAndJcc(OperandSize size, AMD64Address src, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp, boolean annotateImm, IntConsumer applyBeforeFusedPair) {
-        return applyMIOpAndJcc(AMD64BinaryArithmetic.CMP.getMIOpcode(size, NumUtil.isByte(imm32)), size, src, imm32, cc, branchTarget, isShortJmp, annotateImm, applyBeforeFusedPair);
-    }
-
     public final int cmpAndJcc(OperandSize size, Register src1, Register src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.CMP.getRMOpcode(size), size, src1, src2, cc, branchTarget, isShortJmp);
     }
 
     public final int cmpAndJcc(OperandSize size, Register src1, AMD64Address src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.CMP.getRMOpcode(size), size, src1, src2, cc, branchTarget, isShortJmp, null);
     }
 
     public final int cmplAndJcc(Register src1, Register src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.CMP.getRMOpcode(OperandSize.DWORD), OperandSize.DWORD, src1, src2, cc, branchTarget, isShortJmp);
     }
 
     public final int cmpqAndJcc(Register src1, Register src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.CMP.getRMOpcode(OperandSize.QWORD), OperandSize.QWORD, src1, src2, cc, branchTarget, isShortJmp);
     }
 
     public final int cmpAndJcc(OperandSize size, Register src1, AMD64Address src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp, IntConsumer applyBeforeFusedPair) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.CMP.getRMOpcode(size), size, src1, src2, cc, branchTarget, isShortJmp, applyBeforeFusedPair);
     }
 
     public final int cmplAndJcc(Register src1, AMD64Address src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.CMP.getRMOpcode(OperandSize.DWORD), OperandSize.DWORD, src1, src2, cc, branchTarget, isShortJmp, null);
     }
 
     public final int cmpqAndJcc(Register src1, AMD64Address src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.CMP.getRMOpcode(OperandSize.QWORD), OperandSize.QWORD, src1, src2, cc, branchTarget, isShortJmp, null);
     }
 
     public final int cmpqAndJcc(Register src1, AMD64Address src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp, IntConsumer applyBeforeFusedPair) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.CMP.getRMOpcode(OperandSize.QWORD), OperandSize.QWORD, src1, src2, cc, branchTarget, isShortJmp, applyBeforeFusedPair);
-    }
-
-    public final int cmpAndJcc(OperandSize size, Register src1, Supplier<AMD64Address> src2, ConditionFlag cc, Label branchTarget) {
-        AMD64Address placeHolder = getPlaceholder(position());
-        AMD64Address src2AsAddress = src2.get();
-        final AMD64RMOp op = AMD64BinaryArithmetic.CMP.getRMOpcode(size);
-        final int bytesToEmit = getPrefixInBytes(size, src1, op.dstIsByte, placeHolder) + OPCODE_IN_BYTES + addressInBytes(placeHolder) + extraSourceAddressBytes(src2AsAddress);
-        alignFusedPair(branchTarget, false, bytesToEmit);
-        final int beforeFusedPair = position();
-        op.emit(this, size, src1, src2AsAddress);
-        int beforeJcc = position();
-        assert beforeFusedPair + bytesToEmit == beforeJcc : Assertions.errorMessage(beforeFusedPair, bytesToEmit, position());
-        jcc(cc, branchTarget, false);
-        assert ensureWithinBoundary(beforeFusedPair);
-        return beforeJcc;
     }
 
     public final int andlAndJcc(Register dst, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
@@ -758,60 +737,93 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         return applyRMOpAndJcc(AMD64BinaryArithmetic.AND.getRMOpcode(OperandSize.QWORD), OperandSize.QWORD, dst, src, cc, branchTarget, isShortJmp);
     }
 
-    public final int addlAndJcc(Register dst, Register src, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
-        return applyRMOpAndJcc(AMD64BinaryArithmetic.ADD.getRMOpcode(OperandSize.DWORD), OperandSize.DWORD, dst, src, cc, branchTarget, isShortJmp);
-    }
-
     public final int addqAndJcc(Register dst, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "add cannot be fused with JCC on %s", cc);
         return applyMIOpAndJcc(AMD64BinaryArithmetic.ADD.getMIOpcode(OperandSize.QWORD, isByte(imm32)), OperandSize.QWORD, dst, imm32, cc, branchTarget, isShortJmp, false, null);
     }
 
     public final int sublAndJcc(Register dst, Register src, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "sub cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.SUB.getRMOpcode(OperandSize.DWORD), OperandSize.DWORD, dst, src, cc, branchTarget, isShortJmp);
     }
 
     public final int subqAndJcc(Register dst, Register src, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "sub cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.SUB.getRMOpcode(OperandSize.QWORD), OperandSize.QWORD, dst, src, cc, branchTarget, isShortJmp);
     }
 
     public final int sublAndJcc(Register dst, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "sub cannot be fused with JCC on %s", cc);
         return applyMIOpAndJcc(AMD64BinaryArithmetic.SUB.getMIOpcode(OperandSize.DWORD, isByte(imm32)), OperandSize.DWORD, dst, imm32, cc, branchTarget, isShortJmp, false, null);
     }
 
     public final int subqAndJcc(Register dst, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "sub cannot be fused with JCC on %s", cc);
         return applyMIOpAndJcc(AMD64BinaryArithmetic.SUB.getMIOpcode(OperandSize.QWORD, isByte(imm32)), OperandSize.QWORD, dst, imm32, cc, branchTarget, isShortJmp, false, null);
-    }
-
-    public final int subqAndJcc(AMD64Address dst, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
-        return applyMIOpAndJcc(AMD64BinaryArithmetic.SUB.getMIOpcode(OperandSize.QWORD, isByte(imm32)), OperandSize.QWORD, dst, imm32, cc, branchTarget, isShortJmp, false, null);
-    }
-
-    public final int inclAndJcc(Register dst, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
-        return applyMOpAndJcc(AMD64MOp.INC, OperandSize.DWORD, dst, cc, branchTarget, isShortJmp);
     }
 
     public final int incqAndJcc(Register dst, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithIncDec(cc), "inc cannot be fused with JCC on %s", cc);
         return applyMOpAndJcc(AMD64MOp.INC, OperandSize.QWORD, dst, cc, branchTarget, isShortJmp);
     }
 
     public final int declAndJcc(Register dst, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithIncDec(cc), "dec cannot be fused with JCC on %s", cc);
         return applyMOpAndJcc(AMD64MOp.DEC, OperandSize.DWORD, dst, cc, branchTarget, isShortJmp);
     }
 
     public final int decqAndJcc(Register dst, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithIncDec(cc), "dec cannot be fused with JCC on %s", cc);
         return applyMOpAndJcc(AMD64MOp.DEC, OperandSize.QWORD, dst, cc, branchTarget, isShortJmp);
     }
 
-    public final int xorlAndJcc(Register dst, int imm32, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
-        return applyMIOpAndJcc(AMD64BinaryArithmetic.XOR.getMIOpcode(OperandSize.DWORD, isByte(imm32)), OperandSize.DWORD, dst, imm32, cc, branchTarget, isShortJmp, false, null);
+    /**
+     * Checks if the current jcc instruction can be macro-fused with a preceding add/sub/cmp
+     * instruction.
+     * <p>
+     * Intel macro fusion with the aforementioned instructions is supported for jcc instructions
+     * with the following conditions:
+     * <ul>
+     * <li>{@link AMD64Assembler.ConditionFlag#Zero} (jz)</li>
+     * <li>{@link AMD64Assembler.ConditionFlag#Equal} (je)</li>
+     * <li>{@link AMD64Assembler.ConditionFlag#CarrySet} (jc)</li>
+     * <li>{@link AMD64Assembler.ConditionFlag#Below} (jb)</li>
+     * <li>{@link AMD64Assembler.ConditionFlag#Above} (ja)</li>
+     * <li>{@link AMD64Assembler.ConditionFlag#Less} (jl)</li>
+     * <li>{@link AMD64Assembler.ConditionFlag#Greater} (jg)</li>
+     * <li>and their inverses</li>
+     * </ul>
+     *
+     * @return true if macro fusion is possible, false otherwise.
+     */
+    private static boolean canBeFusedWithAddSubCmp(ConditionFlag cc) {
+        return switch (cc) {
+            case Zero, NotZero, Equal, NotEqual, CarrySet, CarryClear, Less, LessEqual, Greater, GreaterEqual, Above, AboveEqual, Below, BelowEqual -> true;
+            default -> false;
+        };
     }
 
-    public final int xorlAndJcc(Register dst, AMD64Address src, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
-        return applyRMOpAndJcc(AMD64BinaryArithmetic.XOR.getRMOpcode(OperandSize.DWORD), OperandSize.DWORD, dst, src, cc, branchTarget, isShortJmp, null);
-    }
-
-    public final int xorqAndJcc(Register dst, AMD64Address src, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
-        return applyRMOpAndJcc(AMD64BinaryArithmetic.XOR.getRMOpcode(OperandSize.QWORD), OperandSize.QWORD, dst, src, cc, branchTarget, isShortJmp, null);
+    /**
+     * Checks if the current jcc instruction can be macro-fused with a preceding inc/dec
+     * instruction.
+     * <p>
+     * Intel macro fusion with the aforementioned instructions is supported for jcc instructions
+     * with the following conditions:
+     * <ul>
+     * <li>{@link AMD64Assembler.ConditionFlag#Zero} (jz)</li>
+     * <li>{@link AMD64Assembler.ConditionFlag#Equal} (je)</li>
+     * <li>{@link AMD64Assembler.ConditionFlag#Less} (jl)</li>
+     * <li>{@link AMD64Assembler.ConditionFlag#Greater} (jg)</li>
+     * <li>and their inverses</li>
+     * </ul>
+     *
+     * @return true if macro fusion is possible, false otherwise.
+     */
+    private static boolean canBeFusedWithIncDec(ConditionFlag cc) {
+        return switch (cc) {
+            case Zero, NotZero, Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual -> true;
+            default -> false;
+        };
     }
 
     public enum ExtendMode {
@@ -861,12 +873,13 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pmovSZxQWORD(ExtendMode extendMode, Register dst, Stride strideDst, Register src, Stride strideSrc, Register index, int displacement) {
         int scaledDisplacement = scaleDisplacement(strideDst, strideSrc, displacement);
+        GraalError.guarantee(inRC(AMD64.CPU, src), "expect CPU register as src base register: %s", src);
         AMD64Address address = new AMD64Address(src, index, strideSrc, scaledDisplacement);
 
         if (strideSrc.value < strideDst.value) {
             GraalError.guarantee(strideDst.log2 - strideSrc.log2 == 1, "unsupported stride pair %s %s", strideSrc, strideDst);
             if (isAVX()) {
-                VexMoveOp.VMOVD.emit(this, AVXKind.AVXSize.XMM, dst, address);
+                VexMoveOp.VMOVD.encoding(avxEncoding).emit(this, AVXKind.AVXSize.XMM, dst, address);
                 loadAndExtendAVX(AVXKind.AVXSize.QWORD, extendMode, dst, strideDst, dst, strideSrc);
             } else {
                 movdl(dst, address);
@@ -875,7 +888,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         } else {
             GraalError.guarantee(strideSrc.value == strideDst.value, "source stride must be smaller or equal to target stride");
             if (isAVX()) {
-                VexMoveOp.VMOVQ.emit(this, AVXKind.AVXSize.XMM, dst, address);
+                VexMoveOp.VMOVQ.encoding(avxEncoding).emit(this, AVXKind.AVXSize.XMM, dst, address);
             } else {
                 movdq(dst, address);
             }
@@ -903,6 +916,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
         int scaledDisplacement = scaleDisplacement(strideDst, strideSrc, displacement);
         AMD64Address address = new AMD64Address(src, index, strideSrc, scaledDisplacement);
+        GraalError.guarantee(inRC(AMD64.CPU, src), "expect CPU register as src base register: %s", src);
         pmovSZx(size, extendMode, dst, strideDst, address, strideSrc);
     }
 
@@ -938,7 +952,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pmovmsk(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRMOp.VPMOVMSKB.emit(this, size, dst, src);
+            VexRMOp.VPMOVMSKB.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             pmovmskb(dst, src);
         }
@@ -947,7 +961,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     public final void movdqu(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         GraalError.guarantee(size == AVXKind.AVXSize.XMM || size == AVXKind.AVXSize.YMM, "unsupported AVXSize %s", size);
         if (isAVX()) {
-            VexMoveOp.VMOVDQU32.emit(this, size, dst, src);
+            VexMoveOp.VMOVDQU32.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             movdqu(dst, src);
         }
@@ -956,7 +970,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     public final void movdqu(AVXKind.AVXSize size, AMD64Address dst, Register src) {
         GraalError.guarantee(size == AVXKind.AVXSize.XMM || size == AVXKind.AVXSize.YMM, "unsupported AVXSize %s", size);
         if (isAVX()) {
-            VexMoveOp.VMOVDQU32.emit(this, size, dst, src);
+            VexMoveOp.VMOVDQU32.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             movdqu(dst, src);
         }
@@ -965,7 +979,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     public final void movdqu(AVXKind.AVXSize size, Register dst, Register src) {
         GraalError.guarantee(size == AVXKind.AVXSize.XMM || size == AVXKind.AVXSize.YMM, "unsupported AVXSize %s", size);
         if (isAVX()) {
-            VexMoveOp.VMOVDQU32.emit(this, size, dst, src);
+            VexMoveOp.VMOVDQU32.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             movdqu(dst, src);
         }
@@ -993,7 +1007,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqw(AVXKind.AVXSize vectorSize, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQW.emit(this, vectorSize, dst, src, dst);
+            VexRVMOp.VPCMPEQW.encoding(avxEncoding).emit(this, vectorSize, dst, src, dst);
         } else { // SSE
             pcmpeqw(dst, src);
         }
@@ -1001,7 +1015,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqd(AVXKind.AVXSize vectorSize, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQD.emit(this, vectorSize, dst, src, dst);
+            VexRVMOp.VPCMPEQD.encoding(avxEncoding).emit(this, vectorSize, dst, src, dst);
         } else { // SSE
             pcmpeqd(dst, src);
         }
@@ -1009,7 +1023,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqb(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQB.emit(this, size, dst, src, dst);
+            VexRVMOp.VPCMPEQB.encoding(avxEncoding).emit(this, size, dst, src, dst);
         } else { // SSE
             pcmpeqb(dst, src);
         }
@@ -1037,7 +1051,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqb(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQB.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPEQB.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpeqb(dst, src);
         }
@@ -1045,7 +1059,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqw(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQW.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPEQW.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpeqw(dst, src);
         }
@@ -1053,7 +1067,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqd(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQD.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPEQD.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpeqd(dst, src);
         }
@@ -1061,7 +1075,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpgtb(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPGTB.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPGTB.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpgtb(dst, src);
         }
@@ -1069,7 +1083,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpgtd(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPGTD.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPGTD.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpgtd(dst, src);
         }
@@ -1105,7 +1119,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     private void simdRVMOp(VexRVMOp avxOp, SSEOp sseOp, AVXKind.AVXSize vectorSize, Register dst, Register src1, Register src2, boolean isCommutative) {
         if (isAVX()) {
-            avxOp.emit(this, vectorSize, dst, src1, src2);
+            avxOp.encoding(avxEncoding).emit(this, vectorSize, dst, src1, src2);
         } else {
             threeVectorOpSSE(sseOp, dst, src1, src2, isCommutative);
         }
@@ -1136,11 +1150,11 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     }
 
     public final void loadAndExtendAVX(AVXKind.AVXSize size, ExtendMode extendMode, Register dst, Stride strideDst, Register src, Stride strideSrc) {
-        getAVXLoadAndExtendOp(strideDst, strideSrc, extendMode).emit(this, size, dst, src);
+        getAVXLoadAndExtendOp(strideDst, strideSrc, extendMode).encoding(avxEncoding).emit(this, size, dst, src);
     }
 
     public final void loadAndExtendAVX(AVXKind.AVXSize size, ExtendMode extendMode, Register dst, Stride strideDst, AMD64Address src, Stride strideSrc) {
-        getAVXLoadAndExtendOp(strideDst, strideSrc, extendMode).emit(this, size, dst, src);
+        getAVXLoadAndExtendOp(strideDst, strideSrc, extendMode).encoding(avxEncoding).emit(this, size, dst, src);
     }
 
     private static VexRMOp getAVXLoadAndExtendOp(Stride strideDst, Stride strideSrc, ExtendMode extendMode) {
@@ -1305,7 +1319,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void palignr(AVXKind.AVXSize size, Register dst, Register src1, Register src2, int imm8) {
         if (isAVX()) {
-            VexRVMIOp.VPALIGNR.emit(this, size, dst, src1, src2, imm8);
+            VexRVMIOp.VPALIGNR.encoding(avxEncoding).emit(this, size, dst, src1, src2, imm8);
         } else {
             // SSE
             if (!dst.equals(src1)) {
@@ -1321,7 +1335,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pand(AVXKind.AVXSize size, Register dst, Register src1, Register src2) {
         if (isAVX()) {
-            VexRVMOp.VPAND.emit(this, size, dst, src1, src2);
+            VexRVMOp.VPAND.encoding(avxEncoding).emit(this, size, dst, src1, src2);
         } else {
             // SSE
             if (!dst.equals(src1)) {
@@ -1333,7 +1347,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pand(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPAND.emit(this, size, dst, dst, src);
+            VexRVMOp.VPAND.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             // SSE
             pand(dst, src);
@@ -1345,7 +1359,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
      */
     public final void pandU(AVXKind.AVXSize size, Register dst, AMD64Address src, Register tmp) {
         if (isAVX()) {
-            VexRVMOp.VPAND.emit(this, size, dst, dst, src);
+            VexRVMOp.VPAND.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             // SSE
             movdqu(tmp, src);
@@ -1355,7 +1369,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pandn(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPANDN.emit(this, size, dst, dst, src);
+            VexRVMOp.VPANDN.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             // SSE
             pandn(dst, src);
@@ -1364,7 +1378,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void por(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPOR.emit(this, size, dst, dst, src);
+            VexRVMOp.VPOR.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             por(dst, src);
         }
@@ -1376,7 +1390,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pxor(AVXKind.AVXSize size, Register dst, Register src1, Register src2) {
         if (isAVX()) {
-            VexRVMOp.VPXOR.emit(this, size, dst, src1, src2);
+            VexRVMOp.VPXOR.encoding(avxEncoding).emit(this, size, dst, src1, src2);
         } else {
             if (!dst.equals(src1)) {
                 movdqu(dst, src1);
@@ -1387,7 +1401,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void psllw(AVXKind.AVXSize size, Register dst, Register src, int imm8) {
         if (isAVX()) {
-            VexShiftOp.VPSLLW.emit(this, size, dst, src, imm8);
+            VexShiftOp.VPSLLW.encoding(avxEncoding).emit(this, size, dst, src, imm8);
         } else {
             // SSE
             if (!dst.equals(src)) {
@@ -1399,7 +1413,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void psrlw(AVXKind.AVXSize size, Register dst, Register src, int imm8) {
         if (isAVX()) {
-            VexShiftOp.VPSRLW.emit(this, size, dst, src, imm8);
+            VexShiftOp.VPSRLW.encoding(avxEncoding).emit(this, size, dst, src, imm8);
         } else {
             // SSE
             if (!dst.equals(src)) {
@@ -1411,7 +1425,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pslld(AVXKind.AVXSize size, Register dst, Register src, int imm8) {
         if (isAVX()) {
-            VexShiftOp.VPSLLD.emit(this, size, dst, src, imm8);
+            VexShiftOp.VPSLLD.encoding(avxEncoding).emit(this, size, dst, src, imm8);
         } else {
             // SSE
             if (!dst.equals(src)) {
@@ -1423,7 +1437,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void psrld(AVXKind.AVXSize size, Register dst, Register src, int imm8) {
         if (isAVX()) {
-            VexShiftOp.VPSRLD.emit(this, size, dst, src, imm8);
+            VexShiftOp.VPSRLD.encoding(avxEncoding).emit(this, size, dst, src, imm8);
         } else {
             // SSE
             if (!dst.equals(src)) {
@@ -1443,7 +1457,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pshufb(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPSHUFB.emit(this, size, dst, dst, src);
+            VexRVMOp.VPSHUFB.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             // SSE
             pshufb(dst, src);
@@ -1452,7 +1466,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void ptest(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRMOp.VPTEST.emit(this, size, dst, src);
+            VexRMOp.VPTEST.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             ptest(dst, src);
         }
@@ -1463,7 +1477,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
      */
     public final void ptestU(AVXKind.AVXSize size, Register dst, AMD64Address src, Register tmp) {
         if (isAVX()) {
-            VexRMOp.VPTEST.emit(this, size, dst, src);
+            VexRMOp.VPTEST.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             movdqu(tmp, src);
             ptest(dst, tmp);
@@ -1485,6 +1499,14 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         movl(dst, imm);
     }
 
+    public final void moveInt(Register dst, int imm, boolean annotateImm) {
+        if (!annotateImm) {
+            moveInt(dst, imm);
+        } else {
+            movl(dst, imm, true);
+        }
+    }
+
     public final void moveInt(AMD64Address dst, int imm) {
         if (imm == 0) {
             Register zeroValueRegister = getZeroValueRegister();
@@ -1494,6 +1516,14 @@ public class AMD64MacroAssembler extends AMD64Assembler {
             }
         }
         movl(dst, imm);
+    }
+
+    public final void moveInt(AMD64Address dst, int imm, boolean annotateImm) {
+        if (!annotateImm) {
+            moveInt(dst, imm);
+        } else {
+            AMD64MIOp.MOV.emit(this, OperandSize.DWORD, dst, imm, true);
+        }
     }
 
     public final void moveIntSignExtend(Register result, int imm) {

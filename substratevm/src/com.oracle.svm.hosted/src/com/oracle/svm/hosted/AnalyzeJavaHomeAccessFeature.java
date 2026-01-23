@@ -24,18 +24,25 @@
  */
 package com.oracle.svm.hosted;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.util.LogUtils;
-import jdk.graal.compiler.options.Option;
-import jdk.graal.compiler.options.OptionKey;
-import org.graalvm.collections.EconomicMap;
-import org.graalvm.nativeimage.ImageSingletons;
-
 import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.ConcurrentSkipListMap;
+
+import org.graalvm.nativeimage.ImageSingletons;
+
+import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
+import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
+import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
+import com.oracle.svm.core.layeredimagesingleton.LayeredPersistFlags;
+import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.core.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.core.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.core.traits.SingletonTrait;
+import com.oracle.svm.core.traits.SingletonTraitKind;
+import com.oracle.svm.core.traits.SingletonTraits;
+import com.oracle.svm.util.LogUtils;
 
 /**
  * This feature collects <code>System.getProperty("java.home")</code> usage information from the
@@ -43,6 +50,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
  * output.
  */
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = AnalyzeJavaHomeAccessFeature.LayeredCallbacks.class)
 public class AnalyzeJavaHomeAccessFeature implements InternalFeature {
     private boolean javaHomeUsed = false;
     private Set<String> javaHomeUsageLocations = Collections.newSetFromMap(new ConcurrentSkipListMap<>());
@@ -63,30 +71,36 @@ public class AnalyzeJavaHomeAccessFeature implements InternalFeature {
         javaHomeUsageLocations.add(location);
     }
 
-    public void printJavaHomeUsageLocations() {
+    @Override
+    public void beforeCompilation(BeforeCompilationAccess access) {
         for (String location : javaHomeUsageLocations) {
             LogUtils.warning("System.getProperty(\"java.home\") detected at " + location);
         }
-        javaHomeUsageLocations.clear();
+        if (!ImageLayerBuildingSupport.buildingSharedLayer()) {
+            javaHomeUsageLocations = null;
+        }
     }
 
-    @Override
-    public void beforeCompilation(BeforeCompilationAccess access) {
-        AnalyzeJavaHomeAccessFeature.instance().printJavaHomeUsageLocations();
-    }
+    static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
+        private static final String JAVA_HOME_USED = "javaHomeUsed";
+        private static final String JAVA_HOME_USAGE_LOCATIONS = "javaHomeUsageLocations";
 
-    public static class Options {
-        @Option(help = "Track System.getProperty(\\\"java.home\\\") usage in reachable parts of the project.")//
-        public static final HostedOptionKey<Boolean> TrackJavaHomeAccess = new HostedOptionKey<>(false);
-
-        @Option(help = "Output all System.getProperty(\\\"java.home\\\") calls in reachable parts of the project.")//
-        public static final HostedOptionKey<Boolean> TrackJavaHomeAccessDetailed = new HostedOptionKey<>(false) {
-            @Override
-            protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Boolean oldValue, Boolean newValue) {
-                if (newValue) {
-                    TrackJavaHomeAccess.update(values, true);
+        @Override
+        public SingletonTrait getLayeredCallbacksTrait() {
+            return new SingletonTrait(SingletonTraitKind.LAYERED_CALLBACKS, new SingletonLayeredCallbacks<AnalyzeJavaHomeAccessFeature>() {
+                @Override
+                public LayeredPersistFlags doPersist(ImageSingletonWriter writer, AnalyzeJavaHomeAccessFeature singleton) {
+                    writer.writeInt(JAVA_HOME_USED, singleton.javaHomeUsed ? 1 : 0);
+                    writer.writeStringList(JAVA_HOME_USAGE_LOCATIONS, singleton.javaHomeUsageLocations.stream().toList());
+                    return LayeredPersistFlags.CALLBACK_ON_REGISTRATION;
                 }
-            }
-        };
+
+                @Override
+                public void onSingletonRegistration(ImageSingletonLoader loader, AnalyzeJavaHomeAccessFeature singleton) {
+                    singleton.javaHomeUsed = loader.readInt(JAVA_HOME_USED) == 1;
+                    singleton.javaHomeUsageLocations.addAll(loader.readStringList(JAVA_HOME_USAGE_LOCATIONS));
+                }
+            });
+        }
     }
 }

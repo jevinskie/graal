@@ -34,6 +34,7 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.Isolates;
 import com.oracle.svm.core.MemoryWalker;
@@ -49,14 +50,13 @@ import com.oracle.svm.core.heap.ObjectVisitor;
 import com.oracle.svm.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.heap.RuntimeCodeInfoGCSupport;
 import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.option.RuntimeOptionKey;
+import com.oracle.svm.core.option.NotifyGCRuntimeOptionKey;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMThreads.SafepointBehavior;
 import com.oracle.svm.core.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.replacements.ReplacementsUtil;
-import jdk.graal.compiler.word.Word;
 
 /**
  * Equivalent of {@link HeapImpl} for the Wasm backend.
@@ -138,30 +138,34 @@ public class WasmHeap extends Heap {
     }
 
     @Override
-    public boolean walkObjects(ObjectVisitor visitor) {
+    public void walkObjects(ObjectVisitor visitor) {
         VMOperation.guaranteeInProgressAtSafepoint("must only be executed at a safepoint");
-        return walkImageHeapObjects(visitor) && walkCollectedHeapObjects(visitor);
+        walkImageHeapObjects(visitor);
+        walkCollectedHeapObjects(visitor);
     }
 
     @Override
-    public boolean walkImageHeapObjects(ObjectVisitor visitor) {
+    public void walkImageHeapObjects(ObjectVisitor visitor) {
         VMOperation.guaranteeInProgressAtSafepoint("Must only be called at a safepoint");
         if (visitor != null) {
-            return ImageHeapWalker.walkImageHeapObjects(imageHeapInfo, visitor) &&
-                            (!AuxiliaryImageHeap.isPresent() || AuxiliaryImageHeap.singleton().walkObjects(visitor));
+            ImageHeapWalker.walkImageHeapObjects(imageHeapInfo, visitor);
+            if (AuxiliaryImageHeap.isPresent()) {
+                AuxiliaryImageHeap.singleton().walkObjects(visitor);
+            }
         }
-        return true;
     }
 
     @Override
-    public boolean walkCollectedHeapObjects(ObjectVisitor visitor) {
+    public void walkCollectedHeapObjects(ObjectVisitor visitor) {
         VMOperation.guaranteeInProgressAtSafepoint("Must only be called at a safepoint");
-        return WasmAllocation.walkObjects(visitor);
+        WasmAllocation.walkObjects(visitor);
     }
 
-    public boolean walkNativeImageHeapRegions(MemoryWalker.ImageHeapRegionVisitor visitor) {
-        return ImageHeapWalker.walkRegions(imageHeapInfo, visitor) &&
-                        (!AuxiliaryImageHeap.isPresent() || AuxiliaryImageHeap.singleton().walkRegions(visitor));
+    public void walkNativeImageHeapRegions(MemoryWalker.ImageHeapRegionVisitor visitor) {
+        ImageHeapWalker.walkRegions(imageHeapInfo, visitor);
+        if (AuxiliaryImageHeap.isPresent()) {
+            AuxiliaryImageHeap.singleton().walkRegions(visitor);
+        }
     }
 
     @Override
@@ -171,7 +175,7 @@ public class WasmHeap extends Heap {
     }
 
     @Override
-    protected List<Class<?>> getAllClasses() {
+    protected List<Class<?>> getClassesInImageHeap() {
         /* Two threads might race to set classList, but they compute the same result. */
         if (classList == null) {
             ArrayList<Class<?>> list = new ArrayList<>(imageHeapInfo.dynamicHubCount);
@@ -188,16 +192,6 @@ public class WasmHeap extends Heap {
         return Word.unsigned(WasmAllocation.getObjectSize());
     }
 
-    @Override
-    public UnsignedWord getImageHeapReservedBytes() {
-        throw VMError.shouldNotReachHere("Native Memory Tracking is not supported");
-    }
-
-    @Override
-    public UnsignedWord getImageHeapCommittedBytes() {
-        throw VMError.shouldNotReachHere("Native Memory Tracking is not supported");
-    }
-
     private static final class ClassListBuilderVisitor implements MemoryWalker.ImageHeapRegionVisitor, ObjectVisitor {
         private final List<Class<?>> list;
 
@@ -206,20 +200,18 @@ public class WasmHeap extends Heap {
         }
 
         @Override
-        public <T> boolean visitNativeImageHeapRegion(T region, MemoryWalker.NativeImageHeapRegionAccess<T> access) {
-            if (!access.isWritable(region) && !access.consistsOfHugeObjects(region)) {
+        public <T> void visitNativeImageHeapRegion(T region, MemoryWalker.NativeImageHeapRegionAccess<T> access) {
+            if (!access.isWritable(region) && !access.usesUnalignedChunks(region)) {
                 access.visitObjects(region, this);
             }
-            return true;
         }
 
         @Override
         @RestrictHeapAccess(access = RestrictHeapAccess.Access.UNRESTRICTED, reason = "Allocation is fine: this method traverses only the image heap.")
-        public boolean visitObject(Object o) {
+        public void visitObject(Object o) {
             if (o instanceof Class<?>) {
                 list.add((Class<?>) o);
             }
-            return true;
         }
 
     }
@@ -251,8 +243,13 @@ public class WasmHeap extends Heap {
     }
 
     @Override
-    public int getPreferredAddressSpaceAlignment() {
-        throw VMError.shouldNotReachHere("WasmHeap.getPreferredAddressSpaceAlignment");
+    public int getHeapBaseAlignment() {
+        return 1;
+    }
+
+    @Override
+    public int getImageHeapAlignment() {
+        return 1;
     }
 
     @Override
@@ -332,7 +329,7 @@ public class WasmHeap extends Heap {
     }
 
     @Override
-    public void optionValueChanged(RuntimeOptionKey<?> key) {
+    public void optionValueChanged(NotifyGCRuntimeOptionKey<?> key) {
         // Nothing to do
     }
 

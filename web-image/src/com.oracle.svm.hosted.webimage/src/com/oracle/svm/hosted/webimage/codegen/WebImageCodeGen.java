@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -41,6 +41,7 @@ import com.oracle.graal.pointsto.util.Timer;
 import com.oracle.graal.pointsto.util.TimerCollection;
 import com.oracle.svm.core.BuildArtifacts;
 import com.oracle.svm.core.SubstrateOptions;
+import com.oracle.svm.core.image.ImageHeapLayoutInfo;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.NativeImageGenerator;
 import com.oracle.svm.hosted.meta.HostedMetaAccess;
@@ -48,6 +49,7 @@ import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 import com.oracle.svm.hosted.webimage.CodeSizeDiagnostics;
 import com.oracle.svm.hosted.webimage.JSCodeBuffer;
+import com.oracle.svm.hosted.webimage.Labeler;
 import com.oracle.svm.hosted.webimage.WebImageCodeCache;
 import com.oracle.svm.hosted.webimage.WebImageHostedConfiguration;
 import com.oracle.svm.hosted.webimage.codegen.compatibility.JSBenchmarkingCode;
@@ -61,12 +63,11 @@ import com.oracle.svm.hosted.webimage.options.WebImageOptions.CommentVerbosity;
 import com.oracle.svm.hosted.webimage.util.metrics.CodeSizeCollector;
 import com.oracle.svm.hosted.webimage.util.metrics.ImageMetricsCollector;
 import com.oracle.svm.hosted.webimage.util.metrics.MethodMetricsCollector;
-import com.oracle.svm.webimage.Labeler;
 import com.oracle.svm.webimage.NamingConvention;
+import com.oracle.svm.webimage.hightiercodegen.Emitter;
 
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.debug.MetricKey;
-import jdk.graal.compiler.hightiercodegen.Emitter;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.vm.ci.common.JVMCIError;
 
@@ -123,14 +124,16 @@ public abstract class WebImageCodeGen {
     protected final HostedMethod mainEntryPoint;
 
     protected final WebImageCodeCache codeCache;
+    protected final ImageHeapLayoutInfo heapLayout;
     protected final Map<HostedMethod, WebImageCompilationResult> compilations;
 
     protected final WebImageHostedConfiguration configuration;
 
-    protected WebImageCodeGen(WebImageCodeCache codeCache, List<HostedMethod> hostedEntryPoints, HostedMethod mainEntryPoint, WebImageProviders providers, DebugContext debug,
-                    WebImageHostedConfiguration config) {
-        this.hMetaAccess = (HostedMetaAccess) providers.getMetaAccess();
+    protected WebImageCodeGen(WebImageCodeCache codeCache, ImageHeapLayoutInfo heapLayout, List<HostedMethod> hostedEntryPoints, HostedMethod mainEntryPoint, WebImageProviders providers,
+                    DebugContext debug, WebImageHostedConfiguration config) {
+        this.hMetaAccess = providers.getMetaAccess();
         this.codeCache = codeCache;
+        this.heapLayout = heapLayout;
         this.compilations = codeCache.webImageCompilationResults;
         this.hostedEntryPoints = hostedEntryPoints;
         this.mainEntryPoint = Objects.requireNonNull(mainEntryPoint);
@@ -174,9 +177,9 @@ public abstract class WebImageCodeGen {
     }
 
     @SuppressWarnings("try")
-    public static WebImageCodeGen generateCode(WebImageCodeCache codeCache, List<HostedMethod> hostedEntryPoints, HostedMethod mainEntryPoint, WebImageProviders providers, DebugContext debug,
-                    WebImageHostedConfiguration config, ImageClassLoader imageClassLoader) {
-        WebImageCodeGen codegen = config.createCodeGen(codeCache, hostedEntryPoints, mainEntryPoint, providers, debug, imageClassLoader);
+    public static WebImageCodeGen generateCode(WebImageCodeCache codeCache, ImageHeapLayoutInfo heapLayout, List<HostedMethod> hostedEntryPoints, HostedMethod mainEntryPoint,
+                    WebImageProviders providers, DebugContext debug, WebImageHostedConfiguration config, ImageClassLoader imageClassLoader) {
+        WebImageCodeGen codegen = config.createCodeGen(codeCache, heapLayout, hostedEntryPoints, mainEntryPoint, providers, debug, imageClassLoader);
         try (LoggerScope loggerScope = LoggerContext.currentContext().scope(CODE_GEN_SCOPE_NAME, codegen::saveCodegenCounters)) {
             codegen.buildImage();
             return codegen;
@@ -378,7 +381,7 @@ public abstract class WebImageCodeGen {
 
             codeBuffer.emitText(codeGenTool.vmClassName() + ".");
             WebImageEntryFunctionLowerer.FUNCTION.emitCall(codeGenTool, Emitter.of("load_cmd_args()"), Emitter.of("config"));
-            codeBuffer.emitText(".catch(console.error)");
+            codeBuffer.emitText(".catch(e => { console.error(e); throw e; })");
 
             codeBuffer.emitInsEnd();
         } else {

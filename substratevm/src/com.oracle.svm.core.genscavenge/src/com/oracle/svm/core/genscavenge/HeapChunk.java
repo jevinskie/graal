@@ -24,10 +24,13 @@
  */
 package com.oracle.svm.core.genscavenge;
 
+import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+
 import java.util.function.IntUnaryOperator;
 
 import org.graalvm.nativeimage.c.struct.RawField;
 import org.graalvm.nativeimage.c.struct.RawFieldAddress;
+import org.graalvm.nativeimage.c.struct.RawFieldOffset;
 import org.graalvm.nativeimage.c.struct.RawStructure;
 import org.graalvm.nativeimage.c.struct.UniqueLocationIdentity;
 import org.graalvm.word.ComparableWord;
@@ -36,6 +39,7 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.SignedWord;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.AlwaysInline;
 import com.oracle.svm.core.NeverInline;
@@ -44,9 +48,10 @@ import com.oracle.svm.core.c.struct.PinnedObjectField;
 import com.oracle.svm.core.heap.ObjectVisitor;
 import com.oracle.svm.core.hub.LayoutEncoding;
 import com.oracle.svm.core.identityhashcode.IdentityHashCodeSupport;
+import com.oracle.svm.core.util.VMError;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
-import jdk.graal.compiler.word.Word;
+import jdk.graal.compiler.nodes.NamedLocationIdentity;
 
 /**
  * The common structure of the chunks of memory which make up the heap. HeapChunks are aggregated
@@ -78,6 +83,9 @@ import jdk.graal.compiler.word.Word;
  * allocated within the HeapChunk are examined by the collector.
  */
 public final class HeapChunk {
+
+    public static final LocationIdentity CHUNK_HEADER_TOP_IDENTITY = NamedLocationIdentity.mutable("ChunkHeader.top");
+
     private HeapChunk() { // all static
     }
 
@@ -106,12 +114,16 @@ public final class HeapChunk {
          * in the chunk.
          */
         @RawField
-        @UniqueLocationIdentity
-        UnsignedWord getTopOffset();
+        UnsignedWord getTopOffset(LocationIdentity topIdentity);
 
         @RawField
-        @UniqueLocationIdentity
-        void setTopOffset(UnsignedWord newTop);
+        void setTopOffset(UnsignedWord newTop, LocationIdentity topIdentity);
+
+        @RawFieldOffset
+        static int offsetOfTopOffset() {
+            // replaced
+            throw VMError.shouldNotReachHereAtRuntime(); // ExcludeFromJacocoGeneratedReport
+        }
 
         /** Offset of the limit of memory available for allocation. */
         @RawField
@@ -194,18 +206,18 @@ public final class HeapChunk {
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static UnsignedWord getTopOffset(Header<?> that) {
         assert getTopPointer(that).isNonNull() : "Not safe: top currently points to NULL.";
-        return that.getTopOffset();
+        return that.getTopOffset(CHUNK_HEADER_TOP_IDENTITY);
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static Pointer getTopPointer(Header<?> that) {
-        return asPointer(that).add(that.getTopOffset());
+        return asPointer(that).add(that.getTopOffset(CHUNK_HEADER_TOP_IDENTITY));
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void setTopPointer(Header<?> that, Pointer newTop) {
         // Note that the address arithmetic also works for newTop == NULL, e.g. in TLAB allocation
-        that.setTopOffset(newTop.subtract(asPointer(that)));
+        that.setTopOffset(newTop.subtract(asPointer(that)), CHUNK_HEADER_TOP_IDENTITY);
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -301,33 +313,30 @@ public final class HeapChunk {
 
     @NeverInline("Not performance critical")
     @Uninterruptible(reason = "Forced inlining (StoredContinuation objects must not move).")
-    public static boolean walkObjectsFrom(Header<?> that, Pointer start, ObjectVisitor visitor) {
-        return walkObjectsFromInline(that, start, visitor);
+    public static void walkObjectsFrom(Header<?> that, Pointer start, ObjectVisitor visitor) {
+        walkObjectsFromInline(that, start, visitor);
     }
 
     @AlwaysInline("GC performance")
     @Uninterruptible(reason = "Forced inlining (StoredContinuation objects must not move).", callerMustBe = true)
-    public static boolean walkObjectsFromInline(Header<?> that, Pointer start, ObjectVisitor visitor) {
+    public static void walkObjectsFromInline(Header<?> that, Pointer start, ObjectVisitor visitor) {
         Pointer p = start;
         while (p.belowThan(getTopPointer(that))) { // crucial: top can move, so always re-read
-            Object obj = p.toObject();
-            if (!callVisitor(visitor, obj)) {
-                return false;
-            }
+            Object obj = p.toObjectNonNull();
+            callVisitor(visitor, obj);
             p = p.add(LayoutEncoding.getSizeFromObjectInlineInGC(obj));
         }
-        return true;
     }
 
     @AlwaysInline("de-virtualize calls to ObjectReferenceVisitor")
     @Uninterruptible(reason = "Bridge between uninterruptible and potentially interruptible code.", mayBeInlined = true, calleeMustBe = false)
-    private static boolean callVisitor(ObjectVisitor visitor, Object obj) {
-        return visitor.visitObjectInline(obj);
+    private static void callVisitor(ObjectVisitor visitor, Object obj) {
+        visitor.visitObject(obj);
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static UnsignedWord availableObjectMemory(Header<?> that) {
-        return that.getEndOffset().subtract(that.getTopOffset());
+        return that.getEndOffset().subtract(that.getTopOffset(CHUNK_HEADER_TOP_IDENTITY));
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -350,6 +359,7 @@ public final class HeapChunk {
         }
     }
 
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static HeapChunk.Header<?> getEnclosingHeapChunk(Pointer ptrToObj, UnsignedWord header) {
         if (ObjectHeaderImpl.isAlignedHeader(header)) {
             return AlignedHeapChunk.getEnclosingChunkFromObjectPointer(ptrToObj);

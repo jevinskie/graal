@@ -24,7 +24,6 @@
  */
 package com.oracle.svm.graal.isolated;
 
-import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.ObjectHandle;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.word.Pointer;
@@ -36,6 +35,7 @@ import com.oracle.svm.core.c.NonmovableArrays;
 import com.oracle.svm.core.c.NonmovableObjectArray;
 import com.oracle.svm.core.code.ReferenceAdjuster;
 import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.graal.isolated.ClientHandle;
 import com.oracle.svm.core.handles.ThreadLocalHandles;
 import com.oracle.svm.core.memory.NativeMemory;
 import com.oracle.svm.core.meta.DirectSubstrateObjectConstant;
@@ -43,6 +43,7 @@ import com.oracle.svm.core.nmt.NmtCategory;
 import com.oracle.svm.core.util.VMError;
 
 import jdk.vm.ci.meta.JavaConstant;
+import org.graalvm.word.impl.Word;
 
 /**
  * Reference adjuster for {@linkplain ClientHandle handles} from an {@link IsolatedObjectConstant},

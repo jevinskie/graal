@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -70,6 +70,7 @@ import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.graal.compiler.lir.LabelRef;
 import jdk.graal.compiler.lir.StandardOp.JumpOp;
+import jdk.graal.compiler.lir.StandardOp.NewScratchRegisterOp;
 import jdk.graal.compiler.lir.SwitchStrategy;
 import jdk.graal.compiler.lir.Variable;
 import jdk.graal.compiler.lir.amd64.AMD64AESDecryptOp;
@@ -691,13 +692,25 @@ public abstract class AMD64LIRGenerator extends LIRGenerator {
         }
 
         OperandSize opSize = kind == AMD64Kind.SINGLE ? PS : PD;
+        boolean useAVX = ((AMD64ArithmeticLIRGenerator) getArithmetic()).supportAVX();
+        var avxEncoding = ((AMD64ArithmeticLIRGenerator) getArithmetic()).simdEncoding;
         if (y instanceof AMD64AddressValue addr) {
-            append(new AMD64BinaryConsumer.MemoryRMOp(SSEOp.UCOMIS, opSize, asAllocatable(x), addr, state));
+            if (useAVX) {
+                VexRMOp op = (kind == AMD64Kind.SINGLE ? VexRMOp.VUCOMISS : VexRMOp.VUCOMISD).encoding(avxEncoding);
+                append(new AMD64BinaryConsumer.MemoryAvxOp(op, AVXSize.XMM, asAllocatable(x), addr, state));
+            } else {
+                append(new AMD64BinaryConsumer.MemoryRMOp(SSEOp.UCOMIS, opSize, asAllocatable(x), addr, state));
+            }
         } else {
             if (x instanceof AMD64AddressValue) {
                 x = arithmeticLIRGen.emitLoad(LIRKind.value(kind), x, state, MemoryOrderMode.PLAIN, MemoryExtendKind.DEFAULT);
             }
-            append(new AMD64BinaryConsumer.Op(SSEOp.UCOMIS, opSize, asAllocatable(x), asAllocatable(y)));
+            if (useAVX) {
+                VexRMOp op = (kind == AMD64Kind.SINGLE ? VexRMOp.VUCOMISS : VexRMOp.VUCOMISD).encoding(avxEncoding);
+                append(new AMD64BinaryConsumer.AvxOp(op, AVXSize.XMM, asAllocatable(x), asAllocatable(y)));
+            } else {
+                append(new AMD64BinaryConsumer.Op(SSEOp.UCOMIS, opSize, asAllocatable(x), asAllocatable(y)));
+            }
         }
         return c;
     }
@@ -711,12 +724,12 @@ public abstract class AMD64LIRGenerator extends LIRGenerator {
     }
 
     @Override
-    protected void emitForeignCallOp(ForeignCallLinkage linkage, Value targetAddress, Value result, Value[] arguments, Value[] temps, LIRFrameState info) {
-        long maxOffset = linkage.getMaxCallTargetOffset();
+    protected void emitForeignCallOp(ForeignCallLinkage linkage, Value result, Value[] arguments, Value[] temps, LIRFrameState info) {
+        long maxOffset = linkage.getMaxCallTargetOffset(getCodeCache());
         if (maxOffset != (int) maxOffset) {
-            append(new AMD64Call.DirectFarForeignCallOp(linkage, result, arguments, temps, info));
+            append(new AMD64Call.DirectFarForeignCallOp(linkage, result, arguments, temps, linkage.getAdditionalReturns(), info));
         } else {
-            append(new AMD64Call.DirectNearForeignCallOp(linkage, result, arguments, temps, info));
+            append(new AMD64Call.DirectNearForeignCallOp(linkage, result, arguments, temps, linkage.getAdditionalReturns(), info));
         }
     }
 
@@ -883,9 +896,15 @@ public abstract class AMD64LIRGenerator extends LIRGenerator {
 
     @SuppressWarnings("unchecked")
     @Override
+    public void emitArrayCopyWithReverseBytes(Stride stride, EnumSet<?> runtimeCheckedCPUFeatures, Value arraySrc, Value offsetSrc, Value arrayDst, Value offsetDst, Value length) {
+        append(AMD64ArrayCopyWithConversionsOp.movParamsAndCreateReverseBytes(this, stride, (EnumSet<CPUFeature>) runtimeCheckedCPUFeatures, arraySrc, offsetSrc, arrayDst, offsetDst, length));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
     public Variable emitCalcStringAttributes(CalcStringAttributesEncoding encoding, EnumSet<?> runtimeCheckedCPUFeatures,
                     Value array, Value offset, Value length, boolean assumeValid) {
-        Variable result = newVariable(LIRKind.value(encoding == CalcStringAttributesEncoding.UTF_8 || encoding == CalcStringAttributesEncoding.UTF_16 ? AMD64Kind.QWORD : AMD64Kind.DWORD));
+        Variable result = newVariable(LIRKind.value(encoding == CalcStringAttributesEncoding.UTF_8 || encoding.isUTF16() ? AMD64Kind.QWORD : AMD64Kind.DWORD));
         append(AMD64CalcStringAttributesOp.movParamsAndCreate(this, encoding, (EnumSet<CPUFeature>) runtimeCheckedCPUFeatures, array, offset, length, result, assumeValid));
         return result;
     }
@@ -978,7 +997,7 @@ public abstract class AMD64LIRGenerator extends LIRGenerator {
         emitMove(rZ, z);
         emitMove(rZlen, zlen);
 
-        append(new AMD64BigIntegerMultiplyToLenOp(rX, rXlen, rY, rYlen, rZ, rZlen, getHeapBaseRegister()));
+        append(new AMD64BigIntegerMultiplyToLenOp(this, rX, rXlen, rY, rYlen, rZ, rZlen));
     }
 
     @Override
@@ -995,7 +1014,7 @@ public abstract class AMD64LIRGenerator extends LIRGenerator {
         emitMove(rLen, len);
         emitMove(rK, k);
 
-        append(new AMD64BigIntegerMulAddOp(rOut, rIn, rOffset, rLen, rK, getHeapBaseRegister()));
+        append(new AMD64BigIntegerMulAddOp(this, rOut, rIn, rOffset, rLen, rK));
         // result of AMD64BigIntegerMulAddOp is stored at rax
         Variable result = newVariable(len.getValueKind());
         emitMove(result, AMD64.rax.asValue(len.getValueKind()));
@@ -1014,7 +1033,7 @@ public abstract class AMD64LIRGenerator extends LIRGenerator {
         emitMove(rZ, z);
         emitMove(rZlen, zlen);
 
-        append(new AMD64BigIntegerSquareToLenOp(rX, rLen, rZ, rZlen, getHeapBaseRegister()));
+        append(new AMD64BigIntegerSquareToLenOp(this, rX, rLen, rZ, rZlen));
     }
 
     @Override
@@ -1153,8 +1172,11 @@ public abstract class AMD64LIRGenerator extends LIRGenerator {
     }
 
     @Override
-    protected void emitRangeTableSwitch(int lowKey, LabelRef defaultTarget, LabelRef[] targets, SwitchStrategy remainingStrategy, LabelRef[] remainingTargets, AllocatableValue key) {
-        append(new RangeTableSwitchOp(this, lowKey, defaultTarget, targets, remainingStrategy, remainingTargets, key));
+    protected void emitRangeTableSwitch(int lowKey, LabelRef defaultTarget, LabelRef[] targets, SwitchStrategy remainingStrategy, LabelRef[] remainingTargets, AllocatableValue key,
+                    boolean inputMayBeOutOfRange, boolean mayEmitThreadedCode) {
+        AllocatableValue scratch = newVariable(LIRKind.value(target().arch.getWordKind()));
+        append(new NewScratchRegisterOp(scratch));
+        append(new RangeTableSwitchOp(this, lowKey, defaultTarget, targets, remainingStrategy, remainingTargets, key, scratch, inputMayBeOutOfRange, mayEmitThreadedCode));
     }
 
     @Override
@@ -1230,14 +1252,6 @@ public abstract class AMD64LIRGenerator extends LIRGenerator {
 
     public boolean supportsCPUFeature(AMD64.CPUFeature feature) {
         return ((AMD64) target().arch).getFeatures().contains(feature);
-    }
-
-    public boolean supportsCPUFeature(String feature) {
-        try {
-            return ((AMD64) target().arch).getFeatures().contains(AMD64.CPUFeature.valueOf(feature));
-        } catch (IllegalArgumentException e) {
-            return false;
-        }
     }
 
     public boolean usePopCountInstruction() {

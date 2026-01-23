@@ -143,6 +143,7 @@ import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.profiles.InlinedBranchProfile;
+import com.oracle.truffle.tck.tests.TruffleTestAssumptions;
 import com.oracle.truffle.tck.tests.ValueAssert;
 import com.oracle.truffle.tck.tests.ValueAssert.Trait;
 
@@ -172,8 +173,16 @@ public class ValueAPITest {
 
     @BeforeClass
     public static void setUp() {
-        context = Context.newBuilder().allowHostAccess(HostAccess.ALL).build();
-        secondaryContext = Context.newBuilder().allowHostAccess(HostAccess.ALL).build();
+        Context.Builder builder = Context.newBuilder().allowHostAccess(HostAccess.ALL);
+        if (TruffleTestAssumptions.isOptimizingRuntime()) {
+            // TODO GR-65179
+            builder.allowExperimentalOptions(true).option("engine.MaximumCompilations", "-1");
+            if (TruffleTestAssumptions.isDeoptLoopDetectionAvailable()) {
+                builder.option("compiler.DeoptCycleDetectionThreshold", "-1");
+            }
+        }
+        context = builder.build();
+        secondaryContext = builder.build();
     }
 
     @AfterClass
@@ -297,7 +306,7 @@ public class ValueAPITest {
     @Test
     public void testNull() {
         assertValueInContexts(context.asValue(null), HOST_OBJECT, NULL);
-        assertValueInContexts(createDelegateInteropWrapper(context, context.asValue(null)), NULL);
+        assertValueInContexts(createDelegateInteropWrapper(context, context.asValue(null)), HOST_OBJECT, NULL);
     }
 
     private static class BigIntegerSubClass extends BigInteger {
@@ -410,10 +419,7 @@ public class ValueAPITest {
 
             Value v = context.asValue(value);
             assertValueInContexts(v, expectedTraits.toArray(new Trait[0]));
-
-            expectedTraits.remove(HOST_OBJECT);
             assertValueInContexts(createDelegateInteropWrapper(context, v), expectedTraits.toArray(new Trait[0]));
-
         }
     }
 
@@ -510,10 +516,7 @@ public class ValueAPITest {
             final Value value = context.asValue(buffer);
 
             assertValueInContexts(value, BUFFER_ELEMENTS, HOST_OBJECT, MEMBERS);
-
-            // with the wrapper these buffers are no longer host buffers and trigger context to
-            // context migration code
-            assertValueInContexts(createDelegateInteropWrapper(context, value), BUFFER_ELEMENTS, MEMBERS);
+            assertValueInContexts(createDelegateInteropWrapper(context, value), BUFFER_ELEMENTS, HOST_OBJECT, MEMBERS);
         }
     }
 
@@ -2324,7 +2327,7 @@ public class ValueAPITest {
     public void testHostException() {
         Value exceptionValue = context.asValue(new RuntimeException("expected"));
         assertValueInContexts(exceptionValue, HOST_OBJECT, MEMBERS, EXCEPTION);
-        assertValueInContexts(createDelegateInteropWrapper(context, exceptionValue), MEMBERS, EXCEPTION);
+        assertValueInContexts(createDelegateInteropWrapper(context, exceptionValue), HOST_OBJECT, MEMBERS, EXCEPTION);
         try {
             exceptionValue.throwException();
             fail("should have thrown");

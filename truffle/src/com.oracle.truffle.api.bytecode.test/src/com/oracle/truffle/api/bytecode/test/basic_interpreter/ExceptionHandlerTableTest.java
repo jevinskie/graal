@@ -188,7 +188,9 @@ public class ExceptionHandlerTableTest extends AbstractBasicInterpreterTest {
     }
 
     private static void emitNop(BasicInterpreterBuilder b, Object marker) {
+        b.beginAlwaysBoxOperation(); // prevent rewriting
         b.emitLoadConstant(marker);
+        b.endAlwaysBoxOperation();
     }
 
     // @formatter:off
@@ -594,6 +596,7 @@ public class ExceptionHandlerTableTest extends AbstractBasicInterpreterTest {
             b.endTryFinally();
             b.endRoot();
         });
+
         assertEquals(null, root.getCallTarget().call(false));
         assertEquals(42L, root.getCallTarget().call(true));
         assertHandlers(root,

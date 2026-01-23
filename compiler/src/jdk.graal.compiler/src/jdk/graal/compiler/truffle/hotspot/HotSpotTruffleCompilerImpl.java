@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.concurrent.ThreadFactory;
 import java.util.function.Supplier;
 
+import jdk.graal.compiler.options.OptionType;
 import org.graalvm.collections.EconomicMap;
 
 import com.oracle.truffle.compiler.TruffleCompilable;
@@ -52,7 +53,7 @@ import jdk.graal.compiler.core.common.CompilationIdentifier;
 import jdk.graal.compiler.core.target.Backend;
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.debug.DebugContext.Activation;
-import jdk.graal.compiler.debug.DebugHandlersFactory;
+import jdk.graal.compiler.debug.DebugDumpHandlersFactory;
 import jdk.graal.compiler.debug.DiagnosticsOutputDirectory;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.hotspot.CompilerConfigurationFactory;
@@ -116,6 +117,9 @@ public final class HotSpotTruffleCompilerImpl extends TruffleCompilerImpl implem
         // @formatter:off
         @Option(help = "Select a compiler configuration for Truffle compilation (default: use Graal system compiler configuration).")
         public static final OptionKey<String> TruffleCompilerConfiguration = new OptionKey<>(null);
+
+        @Option(help = "Force outlining of @BytecodeInterpreterHandler annotated methods (default: false).", type = OptionType.Debug) //
+        public static final OptionKey<Boolean> OutlineTruffleInterpreterBytecodeHandler = new OptionKey<>(false);
         // @formatter:on
     }
 
@@ -124,8 +128,30 @@ public final class HotSpotTruffleCompilerImpl extends TruffleCompilerImpl implem
      */
     private final HotSpotGraalRuntimeProvider hotspotGraalRuntime;
 
+    /**
+     * Initialize and return Truffle backends.
+     *
+     * @param options option values
+     * @return a list of Truffle backends
+     */
     public static List<HotSpotBackend> ensureBackendsInitialized(OptionValues options) {
         HotSpotGraalRuntimeProvider graalRuntime = (HotSpotGraalRuntimeProvider) getCompiler(options).getGraalRuntime();
+        return ensureBackendsInitialized(options, graalRuntime);
+    }
+
+    /**
+     * Initialize and return Truffle backends using the provided Graal runtime, which must match the
+     * {@link Options#TruffleCompilerConfiguration} or the host configuration if not set.
+     *
+     * @param options option values
+     * @param graalRuntime the Graal runtime
+     * @return a list of Truffle backends
+     */
+    public static List<HotSpotBackend> ensureBackendsInitialized(OptionValues options, HotSpotGraalRuntimeProvider graalRuntime) {
+        if (Options.TruffleCompilerConfiguration.hasBeenSet(options)) {
+            GraalError.guarantee(graalRuntime.getCompilerConfigurationName().equals(Options.TruffleCompilerConfiguration.getValue(options)),
+                            "the provided runtime must match the Truffle compiler configuration");
+        }
         List<HotSpotBackend> backends = new ArrayList<>();
         backends.add(createTruffleBackend(graalRuntime, options, null, null));
         backends.add(createTruffleBackend(graalRuntime, options, null, EconomyCompilerConfigurationFactory.NAME));
@@ -240,7 +266,7 @@ public final class HotSpotTruffleCompilerImpl extends TruffleCompilerImpl implem
             }
         }
         CompilerConfigurationFactory compilerConfigurationFactory = CompilerConfigurationFactory.selectFactory(Options.TruffleCompilerConfiguration.getValue(options), options, runtime);
-        return HotSpotGraalCompilerFactory.createCompiler("Truffle", runtime, options, compilerConfigurationFactory);
+        return HotSpotGraalCompilerFactory.createCompiler("Truffle", runtime, options, compilerConfigurationFactory, null);
     }
 
     public HotSpotTruffleCompilerImpl(HotSpotGraalRuntimeProvider hotspotGraalRuntime, TruffleCompilerConfiguration config) {
@@ -256,14 +282,14 @@ public final class HotSpotTruffleCompilerImpl extends TruffleCompilerImpl implem
         return new HotSpotTruffleCompilationIdentifier(request, task, compilable);
     }
 
-    private volatile List<DebugHandlersFactory> factories;
+    private volatile List<DebugDumpHandlersFactory> factories;
 
-    private List<DebugHandlersFactory> getDebugHandlerFactories() {
+    private List<DebugDumpHandlersFactory> getDebugHandlerFactories() {
         if (factories == null) {
             // Multiple initialization by racing threads is harmless
-            List<DebugHandlersFactory> list = new ArrayList<>();
+            List<DebugDumpHandlersFactory> list = new ArrayList<>();
             list.add(new GraalDebugHandlersFactory(getSnippetReflection()));
-            for (DebugHandlersFactory factory : DebugHandlersFactory.LOADER) {
+            for (DebugDumpHandlersFactory factory : DebugDumpHandlersFactory.LOADER) {
                 // Ignore other instances of GraalDebugHandlersFactory
                 if (!(factory instanceof GraalDebugHandlersFactory)) {
                     list.add(factory);

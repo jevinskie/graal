@@ -24,21 +24,22 @@
  */
 package com.oracle.svm.core.genscavenge;
 
+import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+
 import org.graalvm.nativeimage.c.struct.RawField;
 import org.graalvm.nativeimage.c.struct.RawStructure;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.AlwaysInline;
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.genscavenge.remset.RememberedSet;
 import com.oracle.svm.core.heap.ObjectVisitor;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.util.PointerUtils;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.api.replacements.Fold;
-import jdk.graal.compiler.word.Word;
 
 /**
  * An AlignedHeapChunk can hold many Objects.
@@ -102,29 +103,33 @@ public final class AlignedHeapChunk {
         return HeapChunk.asPointer(that).add(getObjectsStartOffset());
     }
 
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static Pointer getObjectsEnd(AlignedHeader that) {
         return HeapChunk.getEndPointer(that);
     }
 
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static boolean isEmpty(AlignedHeader that) {
         return HeapChunk.getTopOffset(that).equal(getObjectsStartOffset());
     }
 
     /** Allocate uninitialized memory within this AlignedHeapChunk. */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    static Pointer allocateMemory(AlignedHeader that, UnsignedWord size) {
-        Pointer result = Word.nullPointer();
+    public static Pointer tryAllocateMemory(AlignedHeader that, UnsignedWord size) {
         UnsignedWord available = HeapChunk.availableObjectMemory(that);
-        if (size.belowOrEqual(available)) {
-            result = HeapChunk.getTopPointer(that);
-            Pointer newTop = result.add(size);
-            HeapChunk.setTopPointerCarefully(that, newTop);
+        if (size.aboveThan(available)) {
+            return Word.nullPointer();
         }
+
+        Pointer result = HeapChunk.getTopPointer(that);
+        Pointer newTop = result.add(size);
+        HeapChunk.setTopPointerCarefully(that, newTop);
         return result;
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static AlignedHeader getEnclosingChunk(Object obj) {
+        assert ObjectHeaderImpl.isAlignedObject(obj);
         Pointer ptr = Word.objectToUntrackedPointer(obj);
         return getEnclosingChunkFromObjectPointer(ptr);
     }
@@ -144,14 +149,15 @@ public final class AlignedHeapChunk {
         return objectPointer.subtract(objectsStart);
     }
 
-    static boolean walkObjects(AlignedHeader that, ObjectVisitor visitor) {
-        return HeapChunk.walkObjectsFrom(that, getObjectsStart(that), visitor);
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public static void walkObjects(AlignedHeader that, ObjectVisitor visitor) {
+        HeapChunk.walkObjectsFrom(that, getObjectsStart(that), visitor);
     }
 
     @AlwaysInline("GC performance")
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    static boolean walkObjectsFromInline(AlignedHeader that, Pointer start, ObjectVisitor visitor) {
-        return HeapChunk.walkObjectsFromInline(that, start, visitor);
+    static void walkObjectsFromInline(AlignedHeader that, Pointer start, GreyToBlackObjectVisitor visitor) {
+        HeapChunk.walkObjectsFromInline(that, start, visitor);
     }
 
     @Fold
@@ -165,13 +171,7 @@ public final class AlignedHeapChunk {
     }
 
     public interface Visitor {
-        /**
-         * Visit an {@link AlignedHeapChunk}.
-         *
-         * @param chunk The {@link AlignedHeapChunk} to be visited.
-         * @return {@code true} if visiting should continue, {@code false} if visiting should stop.
-         */
-        @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate while visiting the heap.")
-        boolean visitChunk(AlignedHeapChunk.AlignedHeader chunk);
+        @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+        void visitChunk(AlignedHeader chunk);
     }
 }

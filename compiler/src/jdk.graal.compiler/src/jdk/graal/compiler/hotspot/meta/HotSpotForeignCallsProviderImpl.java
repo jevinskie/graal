@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -41,22 +41,24 @@ import java.util.function.BiConsumer;
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.MapCursor;
 import org.graalvm.word.LocationIdentity;
+import org.graalvm.word.impl.Word;
 
 import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
 import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor.CallSideEffect;
 import jdk.graal.compiler.core.common.spi.ForeignCallSignature;
+import jdk.graal.compiler.debug.DebugCloseable;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.hotspot.HotSpotForeignCallLinkage;
 import jdk.graal.compiler.hotspot.HotSpotForeignCallLinkage.RegisterEffect;
 import jdk.graal.compiler.hotspot.HotSpotForeignCallLinkageImpl;
 import jdk.graal.compiler.hotspot.HotSpotGraalRuntimeProvider;
 import jdk.graal.compiler.hotspot.meta.HotSpotForeignCallDescriptor.Transition;
+import jdk.graal.compiler.hotspot.replaycomp.ReplayCompilationSupport;
 import jdk.graal.compiler.hotspot.stubs.ForeignCallStub;
 import jdk.graal.compiler.hotspot.stubs.InvokeJavaMethodStub;
 import jdk.graal.compiler.hotspot.stubs.Stub;
 import jdk.graal.compiler.options.OptionValues;
-import jdk.graal.compiler.word.Word;
 import jdk.graal.compiler.word.WordTypes;
 import jdk.vm.ci.code.CallingConvention;
 import jdk.vm.ci.code.CodeCacheProvider;
@@ -80,6 +82,8 @@ public abstract class HotSpotForeignCallsProviderImpl implements HotSpotForeignC
                     Word.class);
 
     public static final HotSpotForeignCallDescriptor TEST_DEOPTIMIZE_CALL_INT = new HotSpotForeignCallDescriptor(SAFEPOINT, NO_SIDE_EFFECT, any(), "test_deoptimize_call_int", int.class, int.class);
+    public static final HotSpotForeignCallDescriptor TEST_DEOPTIMIZE_CALLER_OF_CALLER = new HotSpotForeignCallDescriptor(SAFEPOINT, NO_SIDE_EFFECT, any(), "test_deoptimize_caller_of_caller",
+                    int.class, int.class);
 
     protected final HotSpotJVMCIRuntime jvmciRuntime;
     protected final HotSpotGraalRuntimeProvider runtime;
@@ -115,9 +119,16 @@ public abstract class HotSpotForeignCallsProviderImpl implements HotSpotForeignC
      * know the signature of such calls during image building.
      */
     public void register(ForeignCallSignature sig) {
-        if (!foreignCalls.containsKey(sig)) {
+        if (!isRegistered(sig)) {
             foreignCalls.put(sig, null);
         }
+    }
+
+    /**
+     * Checks if a foreign call signature is registered.
+     */
+    public boolean isRegistered(ForeignCallSignature sig) {
+        return foreignCalls.containsKey(sig);
     }
 
     /**
@@ -264,13 +275,23 @@ public abstract class HotSpotForeignCallsProviderImpl implements HotSpotForeignC
     public static final boolean DONT_PREPEND_THREAD = !PREPEND_THREAD;
 
     @Override
+    @SuppressWarnings("try")
     public HotSpotForeignCallLinkage lookupForeignCall(ForeignCallSignature signature) {
         GraalError.guarantee(foreignCalls != null, "%s", signature);
         HotSpotForeignCallLinkage callTarget = foreignCalls.get(signature);
         if (callTarget == null) {
             throw GraalError.shouldNotReachHere("Missing implementation for runtime call: " + signature); // ExcludeFromJacocoGeneratedReport
         }
-        callTarget.finalizeAddress(runtime.getHostBackend());
+        if (callTarget.hasAddress()) {
+            return callTarget;
+        }
+        ReplayCompilationSupport support = getRuntime().getReplayCompilationSupport();
+        if (support != null && support.finalizeForeignCallLinkage(signature, callTarget)) {
+            return callTarget;
+        }
+        try (DebugCloseable ignored = ReplayCompilationSupport.enterSnippetContext(support)) {
+            callTarget.finalizeAddress(runtime.getHostBackend());
+        }
         return callTarget;
     }
 

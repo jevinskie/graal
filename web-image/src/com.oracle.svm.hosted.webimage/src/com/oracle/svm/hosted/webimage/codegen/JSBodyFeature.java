@@ -24,13 +24,6 @@
  */
 package com.oracle.svm.hosted.webimage.codegen;
 
-import java.lang.reflect.Executable;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.util.List;
-import java.util.Set;
-
-import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.webimage.api.JS;
 import org.graalvm.webimage.api.JSObject;
@@ -38,28 +31,28 @@ import org.graalvm.webimage.api.JSValue;
 
 import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.meta.AnalysisField;
+import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.svm.core.ParsingReason;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.core.nodes.SubstrateMethodCallTargetNode;
 import com.oracle.svm.hosted.FeatureImpl;
-import com.oracle.svm.hosted.ImageClassLoader;
-import com.oracle.svm.hosted.webimage.JSObjectAccessFeature;
-import com.oracle.svm.hosted.webimage.codegen.node.InterceptJSInvokeNode;
 import com.oracle.svm.hosted.webimage.codegen.oop.ClassWithMirrorLowerer;
-import com.oracle.svm.hosted.webimage.util.ReflectUtil;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.hosted.webimage.js.JSObjectAccessMethod;
+import com.oracle.svm.hosted.webimage.js.JSObjectAccessMethodSupport;
+import com.oracle.svm.util.AnnotationUtil;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 import com.oracle.svm.webimage.api.Nothing;
 import com.oracle.svm.webimage.platform.WebImageJSPlatform;
 
-import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
-import jdk.graal.compiler.core.common.type.Stamp;
 import jdk.graal.compiler.core.common.type.StampFactory;
-import jdk.graal.compiler.nodes.ConstantNode;
+import jdk.graal.compiler.core.common.type.StampPair;
+import jdk.graal.compiler.nodes.CallTargetNode;
 import jdk.graal.compiler.nodes.Invoke;
+import jdk.graal.compiler.nodes.InvokeWithExceptionNode;
 import jdk.graal.compiler.nodes.ValueNode;
-import jdk.graal.compiler.nodes.extended.ForeignCallNode;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderContext;
 import jdk.graal.compiler.nodes.graphbuilderconf.InlineInvokePlugin;
@@ -78,53 +71,21 @@ import jdk.vm.ci.meta.ResolvedJavaType;
 @AutomaticallyRegisteredFeature
 @Platforms(WebImageJSPlatform.class)
 public final class JSBodyFeature implements InternalFeature {
-    // The set of methods that are potentially overridden by a JS-annotated method.
-    private Set<Method> jsOverridden;
-
-    @Override
-    public void afterRegistration(AfterRegistrationAccess access) {
-        FeatureImpl.AfterRegistrationAccessImpl accessImpl = (FeatureImpl.AfterRegistrationAccessImpl) access;
-        ImageClassLoader imageClassLoader = accessImpl.getImageClassLoader();
-        List<Class<?>> allClasses = imageClassLoader.findSubclasses(Object.class, true);
-        jsOverridden = ReflectUtil.findBaseMethodsOfJSAnnotated(allClasses);
-    }
-
     @Override
     public void registerGraphBuilderPlugins(Providers providers, GraphBuilderConfiguration.Plugins plugins, ParsingReason reason) {
+        ResolvedJavaType jsObjectType = providers.getMetaAccess().lookupJavaType(JSObject.class);
         plugins.appendNodePlugin(new NodePlugin() {
             @Override
             public boolean handleInvoke(GraphBuilderContext b, ResolvedJavaMethod method, ValueNode[] args) {
-                if (AnnotationAccess.isAnnotationPresent(method.getDeclaringClass(), JS.Import.class)) {
+                if (AnnotationUtil.isAnnotationPresent(method.getDeclaringClass(), JS.Import.class)) {
                     ((AnalysisType) method.getDeclaringClass()).registerAsInstantiated("JS.Import classes might be allocated in JavaScript. We need to tell the static analysis about that");
                 }
-                if (canBeJavaScriptCall((AnalysisMethod) method)) {
-                    InterceptJSInvokeNode intercept = b.append(new InterceptJSInvokeNode(method, b.bci()));
-                    for (final ValueNode arg : args) {
-                        intercept.arguments().add(arg);
-                    }
-                }
-                return false;
-            }
-
-            private boolean canBeJavaScriptCall(AnalysisMethod method) {
-                Executable executable;
-                try {
-                    executable = method.getJavaMethod();
-                } catch (Throwable e) {
-                    // Either a substituted method, or a method with a malformed bytecode signature.
-                    // This is most likely not a JS-annotated method.
-                    return false;
-                }
-                if (executable instanceof Method) {
-                    return jsOverridden.contains(executable);
-                }
-                // Not a normal method (constructor).
                 return false;
             }
 
             @Override
             public boolean handleLoadField(GraphBuilderContext b, ValueNode object, ResolvedJavaField field) {
-                if (ClassWithMirrorLowerer.isJSObjectSubtype(((AnalysisType) field.getDeclaringClass()).getJavaClass())) {
+                if (ClassWithMirrorLowerer.isFieldRepresentedInJavaScript(b.getMetaAccess(), field)) {
                     genJSObjectFieldAccess(b, object, field, null);
                     return true;
                 }
@@ -133,51 +94,61 @@ public final class JSBodyFeature implements InternalFeature {
 
             @Override
             public boolean handleStoreField(GraphBuilderContext b, ValueNode object, ResolvedJavaField field, ValueNode value) {
-                if (ClassWithMirrorLowerer.isJSObjectSubtype(((AnalysisType) field.getDeclaringClass()).getJavaClass())) {
+                if (ClassWithMirrorLowerer.isFieldRepresentedInJavaScript(b.getMetaAccess(), field)) {
                     genJSObjectFieldAccess(b, object, field, value);
                     return true;
                 }
                 return false;
             }
 
-            private void genJSObjectFieldAccess(GraphBuilderContext b, ValueNode object, ResolvedJavaField field, ValueNode valueForStore) {
-                ResolvedJavaType fieldType = field.getType().resolve(null);
-                JavaKind fieldKind = fieldType.getJavaKind();
-                ConstantNode fieldNameNode = ConstantNode.forConstant(b.getConstantReflection().forString(field.getName()), b.getMetaAccess(), b.getGraph());
+            /**
+             * Replaces an access to {@link JSObject} fields with a call to an
+             * {@link JSObjectAccessMethod accessor method} that performs the access on the
+             * underlying JavaScript object.
+             *
+             * @param valueForStore If {@code null} is this a load. Otherwise, the value to be
+             *            written into the field.
+             * @see JSObjectAccessMethodSupport
+             */
+            private static void genJSObjectFieldAccess(GraphBuilderContext b, ValueNode object, ResolvedJavaField field, ValueNode valueForStore) {
+                AnalysisMetaAccess metaAccess = (AnalysisMetaAccess) b.getMetaAccess();
+                AnalysisField analysisField = (AnalysisField) field;
 
                 boolean isLoad = valueForStore == null;
 
-                ForeignCallDescriptor bridgeMethod;
+                AnalysisMethod accessMethod;
                 ValueNode[] arguments;
                 if (isLoad) {
-                    // This is a load access.
-                    bridgeMethod = JSObjectAccessFeature.GETTERS.get(fieldKind);
-                    arguments = new ValueNode[]{object, fieldNameNode};
+                    accessMethod = JSObjectAccessMethodSupport.singleton().lookupLoadMethod(metaAccess, analysisField);
+                    arguments = new ValueNode[]{object};
                 } else {
-                    // This is a store access.
-                    bridgeMethod = JSObjectAccessFeature.SETTERS.get(fieldKind);
-                    arguments = new ValueNode[]{object, fieldNameNode, valueForStore};
+                    accessMethod = JSObjectAccessMethodSupport.singleton().lookupStoreMethod(metaAccess, analysisField);
+                    arguments = new ValueNode[]{object, valueForStore};
                 }
-                ValueNode access = new ForeignCallNode(bridgeMethod, arguments);
+
+                JavaKind returnKind = accessMethod.getSignature().getReturnType().getJavaKind();
+                StampPair returnStamp = StampPair.createSingle(StampFactory.forKind(returnKind));
+
+                SubstrateMethodCallTargetNode callTarget = new SubstrateMethodCallTargetNode(CallTargetNode.InvokeKind.Static, accessMethod, arguments, returnStamp);
+                /*
+                 * Just use a null exception edge. The GraphBuilderContext takes care of wiring it
+                 * up correctly. The exception edge is needed because the access may produce an
+                 * exception during conversions, especially loads, which can cause a
+                 * ClassCastException if JavaScript code stored a value with the wrong type in the
+                 * field.
+                 */
+                InvokeWithExceptionNode invoke = new InvokeWithExceptionNode(callTarget, null, b.bci());
+
                 if (isLoad) {
-                    b.addPush(fieldKind, access);
-                    // A checkcast is necessary to guard against invalid assignments in JavaScript
-                    // code.
-                    if (fieldKind.isObject()) {
-                        b.pop(fieldKind);
-                        Stamp classStamp = StampFactory.forDeclaredType(null, b.getMetaAccess().lookupJavaType(Class.class), true).getTrustedStamp();
-                        ConstantNode classConstant = b.add(new ConstantNode(b.getConstantReflection().asObjectHub(fieldType.resolve(null)), classStamp));
-                        b.genCheckcastDynamic(access, classConstant);
-                    }
+                    b.addPush(returnKind, invoke);
                 } else {
-                    b.add(access);
+                    b.add(invoke);
                 }
             }
         });
         plugins.prependInlineInvokePlugin(new InlineInvokePlugin() {
             @Override
             public InlineInfo shouldInlineInvoke(GraphBuilderContext b, ResolvedJavaMethod method, ValueNode[] args) {
-                ResolvedJavaType jsObjectType = b.getMetaAccess().lookupJavaType(JSObject.class);
                 ResolvedJavaType declaringClass = method.getDeclaringClass();
                 // Constructors of JavaScript classes must never be inlined, because they contain
                 // initialization code related to mirror hookup.
@@ -189,7 +160,6 @@ public final class JSBodyFeature implements InternalFeature {
 
             @Override
             public void notifyNotInlined(GraphBuilderContext b, ResolvedJavaMethod method, Invoke invoke) {
-                ResolvedJavaType jsObjectType = b.getMetaAccess().lookupJavaType(JSObject.class);
                 ResolvedJavaType declaringClass = method.getDeclaringClass();
                 // Important: even though the node is not inlined during parsing, later inlining
                 // attempts must be prevented too.
@@ -202,43 +172,50 @@ public final class JSBodyFeature implements InternalFeature {
 
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
-        FeatureImpl.BeforeAnalysisAccessImpl accessImpl = (FeatureImpl.BeforeAnalysisAccessImpl) access;
-        BigBang bigbang = accessImpl.getBigBang();
+        FeatureImpl.BeforeAnalysisAccessImpl a = (FeatureImpl.BeforeAnalysisAccessImpl) access;
+        BigBang bigbang = a.getBigBang();
+
+        AnalysisMetaAccess metaAccess = a.getMetaAccess();
+        AnalysisType jsValueType = metaAccess.lookupJavaType(JSValue.class);
+        AnalysisType jsObjectType = metaAccess.lookupJavaType(JSObject.class);
 
         /*
-         * If a @JS.Import class is reachable, register it as allocated.
-         *
-         * The Web Image runtime will create instances of a @JS.Import class in JavaScript/Java
-         * conversion.
+         * Any reachable JSObject subtypes can be allocated from internal JS code during coercion
+         * (e.g. JSValue.checkedCoerce or when returning from an @JS.Coerce method)
          */
-        accessImpl.registerSubtypeReachabilityHandler((acc, clazz) -> {
-            if (clazz.isAnnotationPresent(JS.Import.class)) {
-                String reason = "@JS.import class " + clazz + " reachable, registered from " + JSBodyFeature.class;
-                AnalysisType cls = accessImpl.getMetaAccess().lookupJavaType(clazz);
-                cls.registerAsInstantiated(reason);
+        a.registerSubtypeReachabilityHandler((acc, clazz) -> {
+            AnalysisType cls = metaAccess.lookupJavaType(clazz);
+            if (!cls.isAbstract()) {
+                String reason = "Reachable JSObject classes can be unsafe allocated during coercion, registered from " + JSBodyFeature.class;
+                cls.registerAsUnsafeAllocated(reason);
             }
         }, JSObject.class);
 
-        for (Class<? extends JSValue> subclass : accessImpl.findSubclasses(JSValue.class)) {
-            if (!Modifier.isAbstract(subclass.getModifiers())) {
+        for (var subtype : a.findSubtypes(jsValueType)) {
+            if (!subtype.isAbstract()) {
                 // Include classes that correspond to the primitive JS values, and only reference JS
                 // values that were exported. The rest of the JS values must be *used* from the Java
                 // program in order to be included in the image.
                 //
                 // JSObject must always be included because everything may be covertly converted to
                 // JSObject (in generated code).
-                if (JSObject.class == subclass || !JSObject.class.isAssignableFrom(subclass)) {
-                    accessImpl.registerAsInHeap(subclass);
+                if (jsObjectType.equals(subtype) || !jsObjectType.isAssignableFrom(subtype)) {
+                    a.registerAsInHeap(subtype, "registered from " + JSBodyFeature.class);
                 }
             }
-            if (subclass.isAnnotationPresent(JS.Export.class)) {
-                accessImpl.registerAsInHeap(subclass);
+            /*
+             * All @JS.Export classes are unconditionally registered as unsafe allocated (and
+             * reachable) because they may be instantiated in user JS code without the type ever
+             * appearing in the Java program.
+             */
+            if (AnnotationUtil.isAnnotationPresent(subtype, JS.Export.class)) {
+                subtype.registerAsUnsafeAllocated("@JS.Export classes are unconditionally reachable, registered from " + JSBodyFeature.class);
             }
         }
         // Add helper classes.
         bigbang.addRootClass(Nothing.class, true, false);
 
-        bigbang.addRootMethod(ReflectionUtil.lookupMethod(JSValue.class, "as", Class.class), true, "JSValue.as, registered in " + JSBodyFeature.class);
+        bigbang.addRootMethod((AnalysisMethod) JVMCIReflectionUtil.getUniqueDeclaredMethod(metaAccess, jsValueType, "as", Class.class), true, "JSValue.as, registered in " + JSBodyFeature.class);
     }
 
     @Override
@@ -261,31 +238,32 @@ public final class JSBodyFeature implements InternalFeature {
      * discovered by the reachability analysis.
      */
     private static void findJSObjectSubtypes(FeatureImpl.DuringAnalysisAccessImpl access) {
+        AnalysisType jsObjectType = access.getMetaAccess().lookupJavaType(JSObject.class);
+
         boolean requireAnalysisIteration = false;
-        for (Class<?> jsObjectClass : access.findSubclasses(JSObject.class)) {
+        for (AnalysisType subType : access.findSubtypes(jsObjectType)) {
             // The methods of @JS.Import are intended to be called from Java. They can be discovered
             // by the analysis.
-            if (jsObjectClass.isAnnotationPresent(JS.Import.class)) {
+            if (AnnotationUtil.isAnnotationPresent(subType, JS.Import.class)) {
                 continue;
             }
 
-            AnalysisType type = access.getMetaAccess().lookupJavaType(jsObjectClass);
-            if (type.isReachable()) {
-                for (AnalysisMethod method : type.getDeclaredMethods(false)) {
+            if (subType.isReachable()) {
+                for (AnalysisMethod method : subType.getDeclaredMethods(false)) {
                     // TODO GR-33956: Only register public methods
                     if (!(method.isDirectRootMethod() || method.isVirtualRootMethod())) {
                         access.registerAsRoot(method, false, "JSObject subtype method, registered in " + JSBodyFeature.class);
                         requireAnalysisIteration = true;
                     }
                 }
-                for (AnalysisMethod method : type.getDeclaredConstructors(false)) {
+                for (AnalysisMethod method : subType.getDeclaredConstructors(false)) {
                     // TODO GR-33956: Only register public constructors
                     if (!(method.isDirectRootMethod() || method.isVirtualRootMethod())) {
                         access.registerAsRoot(method, true, "JSObject subtype constructor, registered in " + JSBodyFeature.class);
                         requireAnalysisIteration = true;
                     }
                 }
-                for (ResolvedJavaField javaField : type.getInstanceFields(false)) {
+                for (ResolvedJavaField javaField : subType.getInstanceFields(false)) {
                     AnalysisField field = (AnalysisField) javaField;
                     // TODO GR-33956: Only register public/protected fields
                     requireAnalysisIteration = requireAnalysisIteration | field.registerAsAccessed("used from web-image");
@@ -301,10 +279,5 @@ public final class JSBodyFeature implements InternalFeature {
         if (requireAnalysisIteration) {
             access.requireAnalysisIteration();
         }
-    }
-
-    @Override
-    public void afterAnalysis(AfterAnalysisAccess access) {
-        jsOverridden = null;
     }
 }

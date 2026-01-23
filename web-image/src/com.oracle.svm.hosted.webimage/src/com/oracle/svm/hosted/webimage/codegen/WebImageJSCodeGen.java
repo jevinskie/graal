@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,11 +25,9 @@
 
 package com.oracle.svm.hosted.webimage.codegen;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.HashMap;
@@ -44,13 +42,17 @@ import org.graalvm.webimage.api.JSObject;
 import com.oracle.graal.pointsto.reports.ReportUtils;
 import com.oracle.graal.pointsto.util.Timer.StopTimer;
 import com.oracle.graal.pointsto.util.TimerCollection;
+import com.oracle.svm.core.BuildPhaseProvider;
 import com.oracle.svm.core.InvalidMethodPointerHandler;
 import com.oracle.svm.core.SubstrateOptions;
+import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.meta.HostedField;
+import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.webimage.JSCodeBuffer;
+import com.oracle.svm.hosted.webimage.Labeler;
 import com.oracle.svm.hosted.webimage.WebImageCodeCache;
 import com.oracle.svm.hosted.webimage.WebImageHostedConfiguration;
 import com.oracle.svm.hosted.webimage.codegen.compatibility.JSBenchmarkingCode;
@@ -66,16 +68,15 @@ import com.oracle.svm.hosted.webimage.metrickeys.UniverseMetricKeys;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
 import com.oracle.svm.hosted.webimage.snippets.JSSnippetWithEmitterSupport;
 import com.oracle.svm.hosted.webimage.snippets.JSSnippets;
-import com.oracle.svm.hosted.webimage.util.AnnotationUtil;
 import com.oracle.svm.hosted.webimage.util.TypeControlGraphPrinter;
 import com.oracle.svm.hosted.webimage.util.metrics.CodeSizeCollector;
 import com.oracle.svm.hosted.webimage.util.metrics.ImageMetricsCollector;
-import com.oracle.svm.util.ReflectionUtil;
-import com.oracle.svm.webimage.Labeler;
+import com.oracle.svm.util.AnnotationUtil;
+import com.oracle.svm.util.JVMCIReflectionUtil;
+import com.oracle.svm.webimage.hightiercodegen.CodeBuffer;
+import com.oracle.svm.webimage.hightiercodegen.Emitter;
 
 import jdk.graal.compiler.debug.DebugContext;
-import jdk.graal.compiler.hightiercodegen.CodeBuffer;
-import jdk.graal.compiler.hightiercodegen.Emitter;
 import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.vm.ci.common.JVMCIError;
 import jdk.vm.ci.meta.Constant;
@@ -97,22 +98,22 @@ public class WebImageJSCodeGen extends WebImageCodeGen {
 
     public WebImageJSCodeGen(WebImageCodeCache codeCache, List<HostedMethod> hostedEntryPoints, HostedMethod mainEntryPoint,
                     WebImageProviders providers, DebugContext debug, WebImageHostedConfiguration config, ImageClassLoader imageClassLoader) {
-        super(codeCache, hostedEntryPoints, mainEntryPoint, providers, debug, config);
+        super(codeCache, null, hostedEntryPoints, mainEntryPoint, providers, debug, config);
 
         this.typeControl = ((WebImageJSProviders) providers).typeControl();
         this.methodGraphs = compilations.entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().getGraph()));
         this.imageClassLoader = imageClassLoader;
     }
 
-    private static void lowerJavaScriptCode(CodeBuffer codeBuffer, String titleComment, InputStream is) {
+    private static void lowerJavaScriptCode(CodeBuffer codeBuffer, String titleComment, String content) {
         codeBuffer.emitText(titleComment);
         codeBuffer.emitNewLine();
 
-        BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-        reader.lines().forEach(line -> {
+        content.lines().forEach(line -> {
             codeBuffer.emitText(line);
             codeBuffer.emitNewLine();
         });
+
         codeBuffer.emitNewLine();
     }
 
@@ -142,6 +143,7 @@ public class WebImageJSCodeGen extends WebImageCodeGen {
 
     @Override
     protected void emitCode() {
+        assert BuildPhaseProvider.isHeapLayoutFinished();
         emitJSCode();
     }
 
@@ -266,7 +268,7 @@ public class WebImageJSCodeGen extends WebImageCodeGen {
         HashSet<String> includedPaths = new HashSet<>();
         codeBuffer.emitNewLine();
         for (HostedType type : getProviders().typeControl().emittedTypes()) {
-            var includes = AnnotationUtil.getDeclaredAnnotationsByType(type, JS.Code.Include.class, JS.Code.Include.Group.class, JS.Code.Include.Group::value);
+            var includes = AnnotationUtil.getAnnotationsByType(type, JS.Code.Include.class, JS.Code.Include.Group.class, JS.Code.Include.Group::value);
             for (JS.Code.Include include : includes) {
                 String path = include.value();
                 if (includedPaths.contains(path)) {
@@ -275,16 +277,21 @@ public class WebImageJSCodeGen extends WebImageCodeGen {
                 includedPaths.add(path);
 
                 String titleComment = "// Source file: " + include.value().replace("\n", "").replace("\r", "");
-                InputStream is = type.getJavaClass().getResourceAsStream(path);
-                if (is == null) {
-                    throw new RuntimeException("Resource not found: " + path);
+                byte[] bytes = JVMCIReflectionUtil.getResource(type, path);
+                if (bytes == null) {
+                    throw UserError.abort("Resource at '%s' not found for inclusion using @JS.Code.Include on %s", path, type);
                 }
-                lowerJavaScriptCode(codeBuffer, titleComment, is);
+                try {
+                    String content = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString();
+                    lowerJavaScriptCode(codeBuffer, titleComment, content);
+                } catch (CharacterCodingException e) {
+                    throw UserError.abort(e, "Resource at '%s' for inclusion using @JS.Code.Include on %s has invalid encoding", path, type);
+                }
             }
-            var code = type.getDeclaredAnnotation(JS.Code.class);
+            var code = AnnotationUtil.getAnnotation(type, JS.Code.class);
             if (code != null) {
                 String titleComment = "// Class file: " + type.getJavaClass().getName();
-                lowerJavaScriptCode(codeBuffer, titleComment, new ByteArrayInputStream(code.value().getBytes(StandardCharsets.UTF_8)));
+                lowerJavaScriptCode(codeBuffer, titleComment, code.value());
             }
         }
         codeBuffer.emitText(";;");
@@ -326,13 +333,13 @@ public class WebImageJSCodeGen extends WebImageCodeGen {
             }
         }
 
-        HostedType jsObjectType = (HostedType) getProviders().getMetaAccess().lookupJavaType(JSObject.class);
+        HostedType jsObjectType = getProviders().getMetaAccess().lookupJavaType(JSObject.class);
         requestJSObjectSubclasses(jsObjectType);
     }
 
     private void requestJSObjectSubclasses(HostedType type) {
         // Only explicitly exported classes must be emitted.
-        if (type.getJavaClass().equals(JSObject.class) || type.getAnnotation(JS.Export.class) != null) {
+        if (type.getJavaClass().equals(JSObject.class) || AnnotationUtil.getAnnotation(type, JS.Export.class) != null) {
             typeControl.requestTypeName(type);
         }
         for (HostedType subtype : type.getSubTypes()) {
@@ -427,7 +434,8 @@ public class WebImageJSCodeGen extends WebImageCodeGen {
         try (JSBenchmarkingCode.Timer t = benchmarkingCode.getTimer("Extra Definitions").start();
                         CodeSizeCollector sizeCollector = new CodeSizeCollector(ImageBreakdownMetricKeys.EXTRA_DEFINITIONS_SIZE, codeBuffer::codeSize);
                         Labeler.Injection injection = labeler.injectMetricLabel(codeBuffer, ImageBreakdownMetricKeys.EXTRA_DEFINITIONS_SIZE)) {
-            ResolvedJavaMethod stringCharConstructor = getProviders().getMetaAccess().lookupJavaMethod(ReflectionUtil.lookupConstructor(String.class, char[].class));
+            HostedMetaAccess metaAccess = getProviders().getMetaAccess();
+            ResolvedJavaMethod stringCharConstructor = JVMCIReflectionUtil.getDeclaredConstructor(metaAccess, String.class, char[].class);
             JSSnippetWithEmitterSupport stringCharConstructorSnippet = JSSnippets.instantiateStringCharConstructor(Emitter.of(stringCharConstructor));
             codeGenTool.lower(stringCharConstructorSnippet);
             LowerableResources.lower(codeGenTool, LowerableResources.extra);

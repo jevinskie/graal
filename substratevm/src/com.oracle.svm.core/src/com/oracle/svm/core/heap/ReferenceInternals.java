@@ -24,6 +24,8 @@
  */
 package com.oracle.svm.core.heap;
 
+import static com.oracle.svm.core.NeverInline.CALLER_CATCHES_IMPLICIT_EXCEPTIONS;
+import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.EXTREMELY_FAST_PATH_PROBABILITY;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.probability;
 
@@ -31,6 +33,7 @@ import java.lang.ref.Reference;
 import java.lang.ref.SoftReference;
 
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.SubstrateUtil;
@@ -42,9 +45,8 @@ import com.oracle.svm.core.util.TimeUtils;
 
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
 import jdk.graal.compiler.debug.GraalError;
-import jdk.graal.compiler.word.BarrieredAccess;
-import jdk.graal.compiler.word.ObjectAccess;
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.BarrieredAccess;
+import org.graalvm.word.impl.ObjectAccess;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -127,6 +129,7 @@ public final class ReferenceInternals {
     }
 
     /** Read {@link Target_java_lang_ref_Reference#discovered}. */
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static <T> Reference<?> getNextDiscovered(Reference<T> instance) {
         return uncast(cast(instance).discovered);
     }
@@ -161,7 +164,7 @@ public final class ReferenceInternals {
     }
 
     public static boolean hasQueue(Reference<?> instance) {
-        return cast(instance).queue != Target_java_lang_ref_ReferenceQueue.NULL;
+        return cast(instance).queue != Target_java_lang_ref_ReferenceQueue.NULL_QUEUE;
     }
 
     /*
@@ -179,12 +182,12 @@ public final class ReferenceInternals {
         MonitorSupport.singleton().ensureInitialized(processPendingLock);
     }
 
-    @NeverInline("Ensure that every exception can be caught, including implicit exceptions.")
+    @NeverInline(CALLER_CATCHES_IMPLICIT_EXCEPTIONS)
     public static void waitForPendingReferences() throws InterruptedException {
         Heap.getHeap().waitForReferencePendingList();
     }
 
-    @NeverInline("Ensure that every exception can be caught, including implicit exceptions.")
+    @NeverInline(CALLER_CATCHES_IMPLICIT_EXCEPTIONS)
     @SuppressFBWarnings(value = "NN_NAKED_NOTIFY", justification = "Notifies on progress, not a specific state change.")
     public static void processPendingReferences() {
         /*
@@ -229,7 +232,7 @@ public final class ReferenceInternals {
                 } else {
                     @SuppressWarnings("unchecked")
                     Target_java_lang_ref_ReferenceQueue<? super Object> queue = SubstrateUtil.cast(ref.queue, Target_java_lang_ref_ReferenceQueue.class);
-                    if (queue != Target_java_lang_ref_ReferenceQueue.NULL) {
+                    if (queue != Target_java_lang_ref_ReferenceQueue.NULL_QUEUE) {
                         // Enqueues, avoiding the potentially overridden Reference.enqueue().
                         queue.enqueue(ref);
                     }

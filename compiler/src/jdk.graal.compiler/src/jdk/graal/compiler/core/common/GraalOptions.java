@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -194,6 +194,9 @@ public final class GraalOptions {
     @Option(help = "Comma separated list of registers that register allocation is limited to.", type = OptionType.Debug)
     public static final OptionKey<String> RegisterPressure = new OptionKey<>(null);
 
+    @Option(help = "Permit RegisterPressure setting to cause compilation to fail.", type = OptionType.Debug)
+    public static final OptionKey<Boolean> BailoutOnRegisterPressureFailure = new OptionKey<>(false);
+
     @Option(help = "Eliminates redundant conditional expressions and statements where possible. " +
                    "This can improve performance because fewer logic instructions have to be executed.", type = OptionType.Expert)
     public static final OptionKey<Boolean> ConditionalElimination = new OptionKey<>(true);
@@ -206,6 +209,9 @@ public final class GraalOptions {
 
     @Option(help = "", type = OptionType.Debug)
     public static final OptionKey<Boolean> ReplaceInputsWithConstantsBasedOnStamps = new OptionKey<>(true);
+
+    @Option(help = "", type=OptionType.Debug)
+    public static final OptionKey<Boolean> EnableFixReadsConditionalElimination = new OptionKey<>(true);
 
     @Option(help = "Uses deoptimization to prune branches of code in the generated code that have never " +
                    "been executed by the interpreter.", type = OptionType.Expert)
@@ -285,9 +291,6 @@ public final class GraalOptions {
     @Option(help = "Enable counters for various paths in snippets.", type = OptionType.Debug)
     public static final OptionKey<Boolean> SnippetCounters = new OptionKey<>(false);
 
-    @Option(help = "Eagerly construct extra snippet info.", type = OptionType.Debug)
-    public static final OptionKey<Boolean> EagerSnippets = new OptionKey<>(false);
-
     @Option(help = "Use a cache for snippet graphs.", type = OptionType.Debug)
     public static final OptionKey<Boolean> UseSnippetGraphCache = new OptionKey<>(true);
 
@@ -305,9 +308,6 @@ public final class GraalOptions {
     @Option(help = "Enable inlining decision tracing in stubs and snippets.", type = OptionType.Debug)
     public static final OptionKey<Boolean> TraceInliningForStubsAndSnippets = new OptionKey<>(false);
 
-    @Option(help = "Embeds all the emitted code for Graal-generated stubs.", type = OptionType.Expert)
-    public static final OptionKey<Boolean> InlineGraalStubs = new OptionKey<>(false);
-
     @Option(help = "If applicable, uses bulk zeroing instructions when the zeroing size in bytes exceeds this threshold.", type = OptionType.Expert)
     public static final OptionKey<Integer> MinimalBulkZeroingSize = new OptionKey<>(2048);
 
@@ -316,6 +316,9 @@ public final class GraalOptions {
 
     @Option(help = "Alignment in bytes for loop header blocks that have no fall through paths.", type = OptionType.Debug)
     public static final OptionKey<Integer> IsolatedLoopHeaderAlignment = new OptionKey<>(32);
+
+    @Option(help = "Aligns jump table entries as if they were loop headers.", type = OptionType.Debug)
+    public static final OptionKey<Boolean> AlignJumpTableEntry = new OptionKey<>(true);
 
     @Option(help = "Evaluates array region equality checks at compile time if the receiver is a constant and the length of the array is less than this value.", type = OptionType.Expert)
     public static final OptionKey<Integer> ArrayRegionEqualsConstantLimit = new OptionKey<>(4096);
@@ -344,4 +347,13 @@ public final class GraalOptions {
     @Option(help = "The maximum number of profiled types that will be used when compiling a profiled type check. " +
                     "Note that TypeCheckMinProfileHitProbability also influences whether profiling info is used in compiled type checks.", type = OptionType.Debug)
     public static final OptionKey<Integer> TypeCheckMaxHints = new OptionKey<>(2);
+
+    @Option(help = "Enables target-specific lowering and legalization of SIMD operations. Required for SIMD code generation.", type = OptionType.Debug)
+    public static final OptionKey<Boolean> TargetVectorLowering = new OptionKey<>(true);
+
+    @Option(help = "Enables caching of data structures like control flow graph or schedule across compiler phases.", type = OptionType.Debug)
+    public static final OptionKey<Boolean> CacheCompilerDataStructures = new OptionKey<>(true);
+
+    @Option(help = "Enables tracing of threaded switch optimization decisions.", type = OptionType.Debug)
+    public static final OptionKey<Boolean> TraceThreadedSwitchOptimization = new OptionKey<>(false);
 }

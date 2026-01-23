@@ -29,6 +29,7 @@ import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.NOT_LIKELY
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.probability;
 
 import org.graalvm.word.LocationIdentity;
+import org.graalvm.word.impl.Word;
 
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.nodes.FieldLocationIdentity;
@@ -36,7 +37,6 @@ import jdk.graal.compiler.nodes.NamedLocationIdentity;
 import jdk.graal.compiler.nodes.PiNode;
 import jdk.graal.compiler.nodes.SnippetAnchorNode;
 import jdk.graal.compiler.replacements.nodes.AssertionNode;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaField;
 
@@ -62,7 +62,7 @@ public abstract class WriteBarrierSnippets {
         }
     }
 
-    protected static Word getPointerToFirstArrayElement(Word address, long length, int elementStride) {
+    public static Word getPointerToFirstArrayElement(Word address, long length, int elementStride) {
         long result = address.rawValue();
         if (probability(NOT_LIKELY_PROBABILITY, elementStride < 0)) {
             // the address points to the place after the last array element
@@ -71,7 +71,7 @@ public abstract class WriteBarrierSnippets {
         return Word.unsigned(result);
     }
 
-    protected static Word getPointerToLastArrayElement(Word address, long length, int elementStride) {
+    public static Word getPointerToLastArrayElement(Word address, long length, int elementStride) {
         long result = address.rawValue();
         if (probability(NOT_LIKELY_PROBABILITY, elementStride < 0)) {
             // the address points to the place after the last array element

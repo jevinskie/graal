@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -41,10 +41,14 @@
 package org.graalvm.wasm.api;
 
 import org.graalvm.wasm.WasmType;
-import org.graalvm.wasm.exception.Failure;
-import org.graalvm.wasm.exception.WasmException;
 
 import com.oracle.truffle.api.CompilerAsserts;
+import org.graalvm.wasm.exception.WasmJsApiException;
+import org.graalvm.wasm.types.AbstractHeapType;
+import org.graalvm.wasm.types.HeapType;
+import org.graalvm.wasm.types.NumberType;
+import org.graalvm.wasm.types.ReferenceType;
+import org.graalvm.wasm.types.VectorType;
 
 public enum ValueType {
     i32(WasmType.I32_TYPE),
@@ -53,38 +57,36 @@ public enum ValueType {
     f64(WasmType.F64_TYPE),
     v128(WasmType.V128_TYPE),
     anyfunc(WasmType.FUNCREF_TYPE),
-    externref(WasmType.EXTERNREF_TYPE);
+    externref(WasmType.EXTERNREF_TYPE),
+    exnref(WasmType.EXNREF_TYPE);
 
-    private final byte byteValue;
+    private final int value;
 
-    ValueType(byte byteValue) {
-        this.byteValue = byteValue;
+    ValueType(int value) {
+        this.value = value;
     }
 
-    public static ValueType fromByteValue(byte value) {
+    public static ValueType fromValue(int value) {
         CompilerAsserts.neverPartOfCompilation();
-        switch (value) {
-            case WasmType.I32_TYPE:
-                return i32;
-            case WasmType.I64_TYPE:
-                return i64;
-            case WasmType.F32_TYPE:
-                return f32;
-            case WasmType.F64_TYPE:
-                return f64;
-            case WasmType.V128_TYPE:
-                return v128;
-            case WasmType.FUNCREF_TYPE:
-                return anyfunc;
-            case WasmType.EXTERNREF_TYPE:
-                return externref;
-            default:
-                throw WasmException.create(Failure.UNSPECIFIED_INTERNAL, null, "Unknown value type: 0x" + Integer.toHexString(value));
-        }
+        return switch (value) {
+            case WasmType.I32_TYPE -> i32;
+            case WasmType.I64_TYPE -> i64;
+            case WasmType.F32_TYPE -> f32;
+            case WasmType.F64_TYPE -> f64;
+            case WasmType.V128_TYPE -> v128;
+            default -> {
+                assert WasmType.isReferenceType(value);
+                yield switch (WasmType.getAbstractHeapType(value)) {
+                    case WasmType.FUNC_HEAPTYPE -> anyfunc;
+                    case WasmType.EXTERN_HEAPTYPE -> externref;
+                    default -> throw WasmJsApiException.invalidValueType(value);
+                };
+            }
+        };
     }
 
-    public byte byteValue() {
-        return byteValue;
+    public int value() {
+        return value;
     }
 
     public static boolean isNumberType(ValueType valueType) {
@@ -96,6 +98,43 @@ public enum ValueType {
     }
 
     public static boolean isReferenceType(ValueType valueType) {
-        return valueType == anyfunc || valueType == externref;
+        return valueType == anyfunc || valueType == externref || valueType == exnref;
+    }
+
+    public org.graalvm.wasm.types.ValueType asClosedValueType() {
+        return switch (this) {
+            case i32 -> NumberType.I32;
+            case i64 -> NumberType.I64;
+            case f32 -> NumberType.F32;
+            case f64 -> NumberType.F64;
+            case v128 -> VectorType.V128;
+            case anyfunc -> ReferenceType.FUNCREF;
+            case externref -> ReferenceType.EXTERNREF;
+            case exnref -> ReferenceType.EXNREF;
+        };
+    }
+
+    public static ValueType fromClosedValueType(org.graalvm.wasm.types.ValueType closedValueType) {
+        return switch (closedValueType.valueKind()) {
+            case Number -> switch ((NumberType) closedValueType) {
+                case I32 -> i32;
+                case I64 -> i64;
+                case F32 -> f32;
+                case F64 -> f64;
+            };
+            case Vector -> v128;
+            case Reference -> {
+                HeapType heapType = ((ReferenceType) closedValueType).heapType();
+                yield switch (heapType.heapKind()) {
+                    case Abstract -> switch ((AbstractHeapType) heapType) {
+                        case FUNC -> anyfunc;
+                        case EXTERN -> externref;
+                        case EXN -> exnref;
+                        default -> throw WasmJsApiException.invalidValueType(closedValueType);
+                    };
+                    default -> throw WasmJsApiException.invalidValueType(closedValueType);
+                };
+            }
+        };
     }
 }

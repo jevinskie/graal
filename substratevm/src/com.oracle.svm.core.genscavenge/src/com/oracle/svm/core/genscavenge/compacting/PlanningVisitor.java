@@ -24,13 +24,18 @@
  */
 package com.oracle.svm.core.genscavenge.compacting;
 
+import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.core.genscavenge.HeapChunk.CHUNK_HEADER_TOP_IDENTITY;
+
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.genscavenge.AlignedHeapChunk;
+import com.oracle.svm.core.genscavenge.GCImpl;
 import com.oracle.svm.core.genscavenge.HeapChunk;
 import com.oracle.svm.core.genscavenge.ObjectHeaderImpl;
 import com.oracle.svm.core.genscavenge.Space;
@@ -38,8 +43,7 @@ import com.oracle.svm.core.genscavenge.remset.BrickTable;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.ObjectHeader;
 import com.oracle.svm.core.hub.LayoutEncoding;
-
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.Word;
 
 /**
  * Decides where live objects will be moved during compaction and stores this information in gaps
@@ -55,13 +59,15 @@ public final class PlanningVisitor implements AlignedHeapChunk.Visitor {
     public PlanningVisitor() {
     }
 
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public void init(Space space) {
         allocChunk = space.getFirstAlignedHeapChunk();
         allocPointer = AlignedHeapChunk.getObjectsStart(allocChunk);
     }
 
     @Override
-    public boolean visitChunk(AlignedHeapChunk.AlignedHeader chunk) {
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public void visitChunk(AlignedHeapChunk.AlignedHeader chunk) {
         boolean sweeping = chunk.getShouldSweepInsteadOfCompact();
         Pointer initialTop = HeapChunk.getTopPointer(chunk); // top doesn't move until we are done
 
@@ -93,12 +99,10 @@ public final class PlanningVisitor implements AlignedHeapChunk.Visitor {
                 Object forwardedObj = ObjectHeaderImpl.getObjectHeaderImpl().getForwardedObject(p, header);
                 objSize = LayoutEncoding.getSizeFromObjectWithoutOptionalIdHashFieldInGC(forwardedObj);
             } else {
-                objSize = LayoutEncoding.getSizeFromObjectInlineInGC(p.toObject());
+                objSize = LayoutEncoding.getSizeFromObjectInlineInGC(p.toObjectNonNull());
             }
 
             if (ObjectHeaderImpl.isMarkedHeader(header)) {
-                ObjectHeaderImpl.unsetMarkedAndKeepRememberedSetBit(p.toObject());
-
                 /*
                  * Adding the optional identity hash field would increase an object's size, so we
                  * should have copied all objects that need one during marking instead.
@@ -121,7 +125,7 @@ public final class PlanningVisitor implements AlignedHeapChunk.Visitor {
 
             } else { // not marked, i.e. not alive and start of a gap of yet unknown size
                 if (objSeqSize.notEqual(0)) { // end of an object sequence
-                    Pointer newAddress = sweeping ? objSeq : allocate(objSeqSize);
+                    Pointer newAddress = sweeping ? objSeq : allocate(objSeqSize, chunk);
                     ObjectMoveInfo.setNewAddress(objSeq, newAddress);
                     ObjectMoveInfo.setObjectSeqSize(objSeq, objSeqSize);
 
@@ -141,25 +145,16 @@ public final class PlanningVisitor implements AlignedHeapChunk.Visitor {
         assert gapSize.equal(0) || objSeqSize.equal(0);
 
         if (gapSize.notEqual(0)) { // truncate gap at chunk end
-            chunk.setTopOffset(chunk.getTopOffset().subtract(gapSize));
+            UnsignedWord newTopOffset = chunk.getTopOffset(CHUNK_HEADER_TOP_IDENTITY).subtract(gapSize);
+            chunk.setTopOffset(newTopOffset, CHUNK_HEADER_TOP_IDENTITY);
         } else if (objSeqSize.notEqual(0)) {
-            Pointer newAddress = sweeping ? objSeq : allocate(objSeqSize);
+            Pointer newAddress = sweeping ? objSeq : allocate(objSeqSize, chunk);
             ObjectMoveInfo.setNewAddress(objSeq, newAddress);
             ObjectMoveInfo.setObjectSeqSize(objSeq, objSeqSize);
         }
 
-        if (sweeping) {
-            /*
-             * Continue allocating for compaction after the swept memory. Note that this forfeits
-             * unused memory in the chunks before, but the order of objects must stay the same
-             * across all chunks. If chunks end up completely empty however, they will be released
-             * after compaction.
-             *
-             * GR-54021: it should be possible to avoid this limitation by sweeping chunks without
-             * ObjectMoveInfo and brick tables and potentially even do the sweeping right here.
-             */
-            this.allocChunk = chunk;
-            this.allocPointer = HeapChunk.getTopPointer(chunk);
+        if (sweeping && chunk.equal(allocChunk)) {
+            allocPointer = getSweptChunkAllocationPointer(chunk);
         }
 
         /* Set remaining brick table entries at chunk end. */
@@ -168,21 +163,38 @@ public final class PlanningVisitor implements AlignedHeapChunk.Visitor {
             BrickTable.setEntry(chunk, brickIndex, objSeq);
             brickIndex = brickIndex.add(1);
         }
-
-        return true;
     }
 
-    private Pointer allocate(UnsignedWord size) {
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    private Pointer allocate(UnsignedWord size, AlignedHeapChunk.AlignedHeader currentChunk) {
+        assert size.belowOrEqual(AlignedHeapChunk.getUsableSizeForObjects());
         Pointer p = allocPointer;
-        allocPointer = allocPointer.add(size);
-        if (allocPointer.aboveThan(AlignedHeapChunk.getObjectsEnd(allocChunk))) {
+        allocPointer = p.add(size);
+        while (allocPointer.aboveThan(AlignedHeapChunk.getObjectsEnd(allocChunk))) {
+            assert !allocChunk.equal(currentChunk) : "must not advance past currently processed chunk";
             allocChunk = HeapChunk.getNext(allocChunk);
             assert allocChunk.isNonNull();
-            assert !allocChunk.getShouldSweepInsteadOfCompact();
-
-            p = AlignedHeapChunk.getObjectsStart(allocChunk);
+            if (allocChunk.getShouldSweepInsteadOfCompact()) {
+                p = getSweptChunkAllocationPointer(allocChunk);
+            } else {
+                p = AlignedHeapChunk.getObjectsStart(allocChunk);
+            }
             allocPointer = p.add(size);
         }
         return p;
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    private static Pointer getSweptChunkAllocationPointer(AlignedHeapChunk.AlignedHeader chunk) {
+        assert chunk.getShouldSweepInsteadOfCompact();
+        if (GCImpl.getGCImpl().isOutOfMemoryCollection()) {
+            return HeapChunk.getTopPointer(chunk);
+        }
+        /*
+         * Continue allocation for compaction in the next chunk. Moving in other objects is likely
+         * to increase future fragmentation and sweeping effort until the chunk can participate in
+         * compaction again.
+         */
+        return AlignedHeapChunk.getObjectsEnd(chunk);
     }
 }

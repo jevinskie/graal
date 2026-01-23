@@ -35,23 +35,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
 import java.util.TreeMap;
 
 import com.oracle.svm.core.BuildArtifacts;
-import com.oracle.svm.core.BuildPhaseProvider;
 import com.oracle.svm.core.InvalidMethodPointerHandler;
 import com.oracle.svm.core.image.ImageHeapLayoutInfo;
 import com.oracle.svm.core.meta.MethodPointer;
 import com.oracle.svm.hosted.HeapBreakdownProvider;
 import com.oracle.svm.hosted.NativeImageGenerator;
 import com.oracle.svm.hosted.image.AbstractImage;
-import com.oracle.svm.hosted.image.NativeImageHeap;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.webimage.WebImageCodeCache;
 import com.oracle.svm.hosted.webimage.WebImageHostedConfiguration;
@@ -84,15 +78,16 @@ import com.oracle.svm.hosted.webimage.wasm.ast.visitors.WasmValidator;
 import com.oracle.svm.hosted.webimage.wasm.debug.WasmDebug;
 import com.oracle.svm.hosted.webimage.wasmgc.WasmGCFunctionTemplateFeature;
 import com.oracle.svm.hosted.webimage.wasmgc.types.WasmRefType;
+import com.oracle.svm.util.AnnotationUtil;
 import com.oracle.svm.webimage.NamingConvention;
 import com.oracle.svm.webimage.functionintrinsics.JSFunctionDefinition;
 import com.oracle.svm.webimage.functionintrinsics.JSGenericFunctionDefinition;
 import com.oracle.svm.webimage.functionintrinsics.JSSystemFunction;
+import com.oracle.svm.webimage.hightiercodegen.Emitter;
+import com.oracle.svm.webimage.hightiercodegen.IEmitter;
 import com.oracle.svm.webimage.wasmgc.annotation.WasmExport;
 
 import jdk.graal.compiler.debug.DebugContext;
-import jdk.graal.compiler.hightiercodegen.Emitter;
-import jdk.graal.compiler.hightiercodegen.IEmitter;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 public abstract class WebImageWasmCodeGen extends WebImageCodeGen {
@@ -112,8 +107,6 @@ public abstract class WebImageWasmCodeGen extends WebImageCodeGen {
      */
     protected final ActiveFunctionElements functionTableElements = new ActiveFunctionElements(0, WasmRefType.FUNCREF);
 
-    private ImageHeapLayoutInfo layout = null;
-
     /**
      * Name of the function calling the WASM entry point.
      * <p>
@@ -125,9 +118,9 @@ public abstract class WebImageWasmCodeGen extends WebImageCodeGen {
      */
     public static final JSFunctionDefinition ENTRY_POINT_FUN = new JSGenericFunctionDefinition("wasmRun", 1, false, null, false);
 
-    protected WebImageWasmCodeGen(WebImageCodeCache codeCache, List<HostedMethod> hostedEntryPoints, HostedMethod mainEntryPoint,
+    protected WebImageWasmCodeGen(WebImageCodeCache codeCache, ImageHeapLayoutInfo heapLayout, List<HostedMethod> hostedEntryPoints, HostedMethod mainEntryPoint,
                     WebImageProviders providers, DebugContext debug, WebImageHostedConfiguration config) {
-        super(codeCache, hostedEntryPoints, mainEntryPoint, providers, debug, config);
+        super(codeCache, heapLayout, hostedEntryPoints, mainEntryPoint, providers, debug, config);
 
         this.wasmFilename = this.filename + ".wasm";
         this.watFilename = this.filename + ".wat";
@@ -141,13 +134,7 @@ public abstract class WebImageWasmCodeGen extends WebImageCodeGen {
     }
 
     public ImageHeapLayoutInfo getLayout() {
-        assert layout != null : "Image heap layout not set yet";
-        return layout;
-    }
-
-    protected void setLayout(ImageHeapLayoutInfo layout) {
-        assert this.layout == null : "Image heap layout already set";
-        this.layout = Objects.requireNonNull(layout);
+        return heapLayout;
     }
 
     /**
@@ -158,7 +145,7 @@ public abstract class WebImageWasmCodeGen extends WebImageCodeGen {
      * {@link AbstractImage#getImageHeapSize()}).
      */
     public long getImageHeapSize() {
-        return getLayout().getImageHeapSize();
+        return getLayout().getSize();
     }
 
     /**
@@ -170,7 +157,7 @@ public abstract class WebImageWasmCodeGen extends WebImageCodeGen {
      * This number is mainly used to get the total heap size for image heap breakdown statistics.
      */
     public long getFullImageHeapSize() {
-        return getLayout().getImageHeapSize();
+        return getLayout().getSize();
     }
 
     @Override
@@ -189,16 +176,16 @@ public abstract class WebImageWasmCodeGen extends WebImageCodeGen {
         module.constructActiveDataSegments();
         ((WebImageWasmHeapBreakdownProvider) HeapBreakdownProvider.singleton()).setActualTotalHeapSize((int) getFullImageHeapSize());
 
-        if (WebImageOptions.DebugOptions.VerificationPhases.getValue(options)) {
-            validateModule();
-        }
-
         emitJSCode();
 
         try (Writer writer = Files.newBufferedWriter(watFile)) {
             new WasmPrinter(writer).visitModule(module);
         } catch (IOException e) {
             throw new RuntimeException(e);
+        }
+
+        if (WebImageOptions.DebugOptions.VerificationPhases.getValue(options)) {
+            validateModule();
         }
 
         assembleWasmFile(watFile, wasmFile);
@@ -292,12 +279,12 @@ public abstract class WebImageWasmCodeGen extends WebImageCodeGen {
         module.addFunctionExport(getProviders().idFactory.forMethod(mainEntryPoint), "main", "Main Entry Point");
 
         for (HostedMethod entryPoint : hostedEntryPoints) {
-            if (entryPoint.isAnnotationPresent(WasmExport.class)) {
-                WasmExport annotation = entryPoint.getAnnotation(WasmExport.class);
+            if (AnnotationUtil.isAnnotationPresent(entryPoint, WasmExport.class)) {
+                WasmExport annotation = AnnotationUtil.getAnnotation(entryPoint, WasmExport.class);
                 module.addFunctionExport(getProviders().idFactory().forMethod(entryPoint), annotation.value(), annotation.comment().isEmpty() ? null : annotation.comment());
             }
 
-            if (entryPoint.isAnnotationPresent(WasmStartFunction.class)) {
+            if (AnnotationUtil.isAnnotationPresent(entryPoint, WasmStartFunction.class)) {
                 module.setStartFunction(new StartFunction(getProviders().idFactory().forMethod(entryPoint), null));
             }
         }
@@ -336,19 +323,6 @@ public abstract class WebImageWasmCodeGen extends WebImageCodeGen {
      */
     protected void validateModule() {
         new WasmValidator().visitModule(module);
-    }
-
-    protected void afterHeapLayout() {
-        // after this point, the layout is final and must not be changed anymore
-        assert !hasDuplicatedObjects(codeCache.nativeImageHeap) : "heap.getObjects() must not contain any duplicates";
-        BuildPhaseProvider.markHeapLayoutFinished();
-        codeCache.nativeImageHeap.getLayouter().afterLayout(codeCache.nativeImageHeap);
-    }
-
-    protected boolean hasDuplicatedObjects(NativeImageHeap heap) {
-        Set<NativeImageHeap.ObjectInfo> deduplicated = Collections.newSetFromMap(new IdentityHashMap<>());
-        deduplicated.addAll(heap.getObjects());
-        return deduplicated.size() != heap.getObjectCount();
     }
 
     @Override

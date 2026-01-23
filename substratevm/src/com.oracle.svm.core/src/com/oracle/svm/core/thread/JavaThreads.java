@@ -27,9 +27,6 @@ package com.oracle.svm.core.thread;
 import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import java.lang.Thread.UncaughtExceptionHandler;
-import java.security.AccessControlContext;
-import java.security.AccessController;
-import java.util.EnumSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -48,22 +45,22 @@ import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.imagelayer.LastImageBuildPredicate;
 import com.oracle.svm.core.jdk.StackTraceUtils;
-import com.oracle.svm.core.layeredimagesingleton.ApplicationLayerOnlyImageSingleton;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingletonBuilderFlags;
-import com.oracle.svm.core.layeredimagesingleton.UnsavedSingleton;
 import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
 import com.oracle.svm.core.stack.StackFrameVisitor;
 import com.oracle.svm.core.threadlocal.FastThreadLocal;
 import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
 import com.oracle.svm.core.threadlocal.FastThreadLocalLong;
+import com.oracle.svm.core.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.ApplicationLayerOnly;
+import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.util.ReflectionUtil;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
 import jdk.graal.compiler.replacements.ReplacementsUtil;
-import jdk.graal.compiler.serviceprovider.JavaVersionUtil;
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.Word;
 
 /**
  * Implements operations on {@linkplain Target_java_lang_Thread Java threads}, which are on a higher
@@ -96,7 +93,8 @@ public final class JavaThreads {
     static final FastThreadLocalLong currentVThreadId = FastThreadLocalFactory.createLong("JavaThreads.currentVThreadId").setMaxOffset(FastThreadLocal.BYTE_OFFSET);
 
     @AutomaticallyRegisteredImageSingleton(onlyWith = LastImageBuildPredicate.class)
-    public static class JavaThreadNumberSingleton implements ApplicationLayerOnlyImageSingleton, UnsavedSingleton {
+    @SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = ApplicationLayerOnly.class)
+    public static class JavaThreadNumberSingleton {
 
         public static JavaThreadNumberSingleton singleton() {
             return ImageSingletons.lookup(JavaThreadNumberSingleton.class);
@@ -116,11 +114,6 @@ public final class JavaThreads {
         public void setThreadNumberInfo(long seqNumber, int initNumber) {
             this.threadSeqNumber.set(seqNumber);
             this.threadInitNumber.set(initNumber);
-        }
-
-        @Override
-        public EnumSet<LayeredImageSingletonBuilderFlags> getImageBuilderFlags() {
-            return LayeredImageSingletonBuilderFlags.ALL_ACCESS;
         }
     }
 
@@ -329,71 +322,15 @@ public final class JavaThreads {
                  * If no uncaught exception handler is present, then just report the Throwable in
                  * the same way as it is done by ThreadGroup.uncaughtException().
                  */
+                // Checkstyle: allow System.err (for compatibility with JDK)
                 System.err.print("Exception in thread \"" + thread.getName() + "\" ");
                 throwable.printStackTrace(System.err);
+                // Checkstyle: disallow System.err
             }
         } catch (Throwable e) {
             /* See JavaThread::exit() in HotSpot. */
             Log.log().newline().string("Exception: ").string(e.getClass().getName()).string(" thrown from the UncaughtExceptionHandler in thread \"").string(thread.getName()).string("\"").newline();
         }
-    }
-
-    /**
-     * Thread instance initialization.
-     *
-     * This method is a copy of the implementation of the JDK 8 method
-     *
-     * <code>Thread.init(ThreadGroup g, Runnable target, String name, long stackSize)</code>
-     *
-     * and the JDK 11 constructor
-     *
-     * <code>Thread(ThreadGroup g, Runnable target, String name, long stackSize,
-     * AccessControlContext acc, boolean inheritThreadLocals)</code>
-     *
-     * with these unsupported features removed:
-     * <ul>
-     * <li>No security manager: using the ContextClassLoader of the parent.</li>
-     * </ul>
-     */
-    @SuppressWarnings({"deprecation", "removal"}) // AccessController is deprecated starting JDK 17
-    static void initializeNewThread(
-                    Target_java_lang_Thread tjlt,
-                    ThreadGroup groupArg,
-                    Runnable target,
-                    String name,
-                    long stackSize,
-                    AccessControlContext acc,
-                    boolean inheritThreadLocals) {
-        if (name == null) {
-            throw new NullPointerException("The name cannot be null");
-        }
-        tjlt.name = name;
-
-        final Thread parent = Thread.currentThread();
-        final ThreadGroup group = ((groupArg != null) ? groupArg : parent.getThreadGroup());
-
-        int priority;
-        boolean daemon;
-        if (JavaThreads.toTarget(parent) == tjlt) {
-            priority = Thread.NORM_PRIORITY;
-            daemon = false;
-        } else {
-            priority = parent.getPriority();
-            daemon = parent.isDaemon();
-        }
-
-        initThreadFields(tjlt, group, target, stackSize, priority, daemon);
-
-        PlatformThreads.setThreadStatus(fromTarget(tjlt), ThreadStatus.NEW);
-
-        if (JavaVersionUtil.JAVA_SPEC == 21) {
-            tjlt.inheritedAccessControlContext = acc != null ? acc : AccessController.getContext();
-        }
-
-        initNewThreadLocalsAndLoader(tjlt, inheritThreadLocals, parent);
-
-        /* Set thread ID */
-        tjlt.tid = nextThreadID();
     }
 
     static void initThreadFields(Target_java_lang_Thread tjlt, ThreadGroup group, Runnable target, long stackSize, int priority, boolean daemon) {
@@ -422,16 +359,6 @@ public final class JavaThreads {
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static Object getCurrentThreadLockHelper() {
         return toTarget(Thread.currentThread()).lockHelper;
-    }
-
-    static void blockedOn(Target_sun_nio_ch_Interruptible b) {
-        assert JavaVersionUtil.JAVA_SPEC <= 21 : "blockedOn in newer JDKs uses safe disableSuspendAndPreempt";
-
-        if (isCurrentThreadVirtual()) {
-            VirtualThreadHelper.blockedOn(b);
-        } else {
-            PlatformThreads.blockedOn(b);
-        }
     }
 
     /**

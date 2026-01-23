@@ -43,6 +43,7 @@ import com.oracle.svm.core.annotate.RecomputeFieldValue.Kind;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
+import com.oracle.svm.core.code.RuntimeMetadataDecoderImpl;
 import com.oracle.svm.core.fieldvaluetransformer.FieldValueTransformerWithAvailability;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.layeredimagesingleton.MultiLayeredImageSingleton;
@@ -85,8 +86,11 @@ public final class Target_java_lang_reflect_Field {
     @Alias //
     boolean override;
 
+    @Alias @RecomputeFieldValue(isFinal = true, kind = Kind.None) //
+    public int modifiers;
+
     @Alias //
-    Target_java_lang_reflect_Field root;
+    public Target_java_lang_reflect_Field root;
 
     @Alias
     native Target_java_lang_reflect_Field copy();
@@ -135,7 +139,14 @@ public final class Target_java_lang_reflect_Field {
         return SubstrateUtil.cast(this, Target_java_lang_reflect_AccessibleObject.class).typeAnnotations;
     }
 
+    @Substitute
+    public int getModifiers() {
+        return RuntimeMetadataDecoderImpl.clearInternalModifiers(modifiers);
+    }
+
     public static final class FieldDeletionReasonComputer implements FieldValueTransformerWithAvailability {
+        // JVMCI migration blocked by GR-72441: Equivalents of
+        // ConstantReflectionProvider.asJavaType() for fields and methods
         @Override
         public boolean isAvailable() {
             return BuildPhaseProvider.isHostedUniverseBuilt();
@@ -155,6 +166,8 @@ public final class Target_java_lang_reflect_Field {
     }
 
     static class FieldOffsetComputer implements FieldValueTransformerWithAvailability {
+        // JVMCI migration blocked by GR-72441: Equivalents of
+        // ConstantReflectionProvider.asJavaType() for fields and methods
         @Override
         public boolean isAvailable() {
             return BuildPhaseProvider.isHostedUniverseBuilt();
@@ -167,6 +180,8 @@ public final class Target_java_lang_reflect_Field {
     }
 
     static class LayerNumberComputer implements FieldValueTransformerWithAvailability {
+        // JVMCI migration blocked by GR-72441: Equivalents of
+        // ConstantReflectionProvider.asJavaType() for fields and methods
         @Override
         public boolean isAvailable() {
             return BuildPhaseProvider.isHostedUniverseBuilt();

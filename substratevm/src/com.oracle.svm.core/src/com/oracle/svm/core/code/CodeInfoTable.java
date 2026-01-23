@@ -26,22 +26,16 @@ package com.oracle.svm.core.code;
 
 import static com.oracle.svm.core.deopt.Deoptimizer.Options.LazyDeoptimization;
 
-import java.util.Arrays;
-import java.util.List;
-
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CodePointer;
-import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.word.Pointer;
 
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.c.NonmovableArray;
 import com.oracle.svm.core.c.NonmovableArrays;
 import com.oracle.svm.core.deopt.SubstrateInstalledCode;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.heap.CodeReferenceMapDecoder;
 import com.oracle.svm.core.heap.ObjectReferenceVisitor;
 import com.oracle.svm.core.heap.ReferenceMapIndex;
@@ -56,13 +50,12 @@ import com.oracle.svm.core.option.HostedOptionKey;
 import com.oracle.svm.core.thread.JavaVMOperation;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.util.Counter;
-import com.oracle.svm.core.util.CounterFeature;
 import com.oracle.svm.core.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.options.Option;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.code.InstalledCode;
+import org.graalvm.word.impl.Word;
 
 /**
  * Provides the main entry points to look up metadata for code, either
@@ -112,7 +105,7 @@ public class CodeInfoTable {
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static CodeInfo getFirstImageCodeInfo(int layerNumber) {
-        return MultiLayeredImageSingleton.getForLayer(ImageCodeInfoStorage.class, layerNumber).getData();
+        return MultiLayeredImageSingleton.getForLayer(ImageCodeInfoStorage.class, layerNumber).getCodeInfo();
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -151,7 +144,7 @@ public class CodeInfoTable {
     }
 
     /** Note that this method is only called for regular frames but not for deoptimized frames. */
-    public static boolean visitObjectReferences(Pointer sp, CodePointer ip, CodeInfo info, ObjectReferenceVisitor visitor) {
+    public static void visitObjectReferences(Pointer sp, CodePointer ip, CodeInfo info, ObjectReferenceVisitor visitor) {
         counters().visitObjectReferencesCount.inc();
 
         /*
@@ -169,13 +162,17 @@ public class CodeInfoTable {
         if (referenceMapIndex == ReferenceMapIndex.NO_REFERENCE_MAP) {
             throw fatalErrorNoReferenceMap(sp, ip, info);
         }
-        return CodeReferenceMapDecoder.walkOffsetsFromPointer(sp, referenceMapEncoding, referenceMapIndex, visitor, null);
+        CodeReferenceMapDecoder.walkOffsetsFromPointer(sp, referenceMapEncoding, referenceMapIndex, visitor, null);
     }
 
     @Uninterruptible(reason = "Not really uninterruptible, but we are about to fail.", calleeMustBe = false)
     public static RuntimeException fatalErrorNoReferenceMap(Pointer sp, CodePointer ip, CodeInfo info) {
-        Log.log().string("ip: ").hex(ip).string("  sp: ").hex(sp).string("  info:");
-        CodeInfoAccess.log(info, Log.log()).newline();
+        Log.log().string("ip: ").zhex(ip).string(", sp: ").zhex(sp).string(", code info: ");
+        if (info.isNull()) {
+            Log.log().string("null");
+        } else {
+            CodeInfoAccess.printCodeInfo(Log.log(), info, true);
+        }
         throw VMError.shouldNotReachHere("No reference map information found");
     }
 
@@ -317,38 +314,4 @@ final class CodeInfoTableCounters {
     final Counter visitObjectReferencesCount = new Counter(counters, "visitObjectReferences", "");
     final Counter lookupInstalledCodeCount = new Counter(counters, "lookupInstalledCode", "");
     final Counter invalidateInstalledCodeCount = new Counter(counters, "invalidateInstalledCode", "");
-}
-
-@AutomaticallyRegisteredFeature
-class CodeInfoFeature implements InternalFeature {
-    @Override
-    public List<Class<? extends Feature>> getRequiredFeatures() {
-        return Arrays.asList(CounterFeature.class);
-    }
-
-    @Override
-    public void duringSetup(DuringSetupAccess access) {
-        ImageSingletons.add(CodeInfoTableCounters.class, new CodeInfoTableCounters());
-        ImageSingletons.add(CodeInfoDecoderCounters.class, new CodeInfoDecoderCounters());
-        ImageSingletons.add(CodeInfoEncoder.Counters.class, new CodeInfoEncoder.Counters());
-        ImageSingletons.add(ImageCodeInfo.class, new ImageCodeInfo());
-        ImageSingletons.add(RuntimeCodeInfoHistory.class, new RuntimeCodeInfoHistory());
-        ImageSingletons.add(RuntimeCodeCache.class, new RuntimeCodeCache());
-        ImageSingletons.add(RuntimeCodeInfoMemory.class, new RuntimeCodeInfoMemory());
-    }
-
-    @Override
-    public void afterCompilation(AfterCompilationAccess config) {
-        ImageCodeInfo imageInfo = CodeInfoTable.getCurrentLayerImageCodeCache();
-        config.registerAsImmutable(imageInfo);
-        config.registerAsImmutable(imageInfo.codeInfoIndex);
-        config.registerAsImmutable(imageInfo.codeInfoEncodings);
-        config.registerAsImmutable(imageInfo.referenceMapEncoding);
-        config.registerAsImmutable(imageInfo.frameInfoEncodings);
-        config.registerAsImmutable(imageInfo.objectConstants);
-        config.registerAsImmutable(imageInfo.classes);
-        config.registerAsImmutable(imageInfo.memberNames);
-        config.registerAsImmutable(imageInfo.otherStrings);
-        config.registerAsImmutable(imageInfo.methodTable);
-    }
 }

@@ -49,6 +49,8 @@ fld public final static double LIKELY_PROBABILITY = 0.75
 fld public final static double SLOWPATH_PROBABILITY = 1.0E-4
 fld public final static double UNLIKELY_PROBABILITY = 0.25
 innr public abstract interface static !annotation CompilationFinal
+innr public abstract interface static !annotation EarlyEscapeAnalysis
+innr public abstract interface static !annotation EarlyInline
 innr public abstract interface static !annotation TruffleBoundary
 innr public abstract interface static !annotation ValueType
 meth public static <%0 extends java.lang.Object> {%%0} castExact(java.lang.Object,java.lang.Class<{%%0}>)
@@ -92,6 +94,18 @@ CLSS public abstract interface static !annotation com.oracle.truffle.api.Compile
 intf java.lang.annotation.Annotation
 meth public abstract !hasdefault int dimensions()
 
+CLSS public abstract interface static !annotation com.oracle.truffle.api.CompilerDirectives$EarlyEscapeAnalysis
+ outer com.oracle.truffle.api.CompilerDirectives
+ anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
+ anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[METHOD, CONSTRUCTOR])
+intf java.lang.annotation.Annotation
+
+CLSS public abstract interface static !annotation com.oracle.truffle.api.CompilerDirectives$EarlyInline
+ outer com.oracle.truffle.api.CompilerDirectives
+ anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
+ anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[METHOD, CONSTRUCTOR])
+intf java.lang.annotation.Annotation
+
 CLSS public abstract interface static !annotation com.oracle.truffle.api.CompilerDirectives$TruffleBoundary
  outer com.oracle.truffle.api.CompilerDirectives
  anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
@@ -122,19 +136,83 @@ supr java.lang.Object
 
 CLSS public final com.oracle.truffle.api.ExactMath
 meth public static double truncate(double)
+meth public static double unsignedToDouble(long)
 meth public static float truncate(float)
+meth public static float unsignedToFloat(long)
 meth public static int multiplyHigh(int,int)
 meth public static int multiplyHighUnsigned(int,int)
+meth public static int truncateToUnsignedInt(double)
+meth public static int truncateToUnsignedInt(float)
 meth public static long multiplyHigh(long,long)
 meth public static long multiplyHighUnsigned(long,long)
+meth public static long truncateToUnsignedLong(double)
+meth public static long truncateToUnsignedLong(float)
 supr java.lang.Object
 
 CLSS public final com.oracle.truffle.api.HostCompilerDirectives
+innr public abstract interface static !annotation BytecodeInterpreterFetchOpcode
+innr public abstract interface static !annotation BytecodeInterpreterHandler
+innr public abstract interface static !annotation BytecodeInterpreterHandlerConfig
 innr public abstract interface static !annotation BytecodeInterpreterSwitch
 innr public abstract interface static !annotation BytecodeInterpreterSwitchBoundary
 innr public abstract interface static !annotation InliningCutoff
+innr public abstract interface static !annotation InliningRoot
 meth public static boolean inInterpreterFastPath()
+meth public static int markThreadedSwitch(int)
 supr java.lang.Object
+
+CLSS public abstract interface static !annotation com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterFetchOpcode
+ outer com.oracle.truffle.api.HostCompilerDirectives
+ anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
+ anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[METHOD])
+intf java.lang.annotation.Annotation
+
+CLSS public abstract interface static !annotation com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandler
+ outer com.oracle.truffle.api.HostCompilerDirectives
+ anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
+ anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[METHOD])
+intf java.lang.annotation.Annotation
+meth public abstract !hasdefault boolean safepoint()
+meth public abstract !hasdefault boolean threading()
+meth public abstract int[] value()
+
+CLSS public abstract interface static !annotation com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig
+ outer com.oracle.truffle.api.HostCompilerDirectives
+ anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
+ anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[METHOD])
+innr public abstract interface static !annotation Argument
+intf java.lang.annotation.Annotation
+meth public abstract com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument[] arguments()
+meth public abstract int maximumOperationCode()
+
+CLSS public abstract interface static !annotation com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument
+ outer com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig
+ anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
+ anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[METHOD])
+innr public abstract interface static !annotation Field
+innr public final static !enum ExpansionKind
+intf java.lang.annotation.Annotation
+meth public abstract !hasdefault boolean nonNull()
+meth public abstract !hasdefault boolean returnValue()
+meth public abstract !hasdefault com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$ExpansionKind expand()
+meth public abstract !hasdefault com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$Field[] fields()
+
+CLSS public final static !enum com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$ExpansionKind
+ outer com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument
+fld public final static com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$ExpansionKind MATERIALIZED
+fld public final static com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$ExpansionKind NONE
+fld public final static com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$ExpansionKind VIRTUAL
+meth public static com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$ExpansionKind valueOf(java.lang.String)
+meth public static com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$ExpansionKind[] values()
+supr java.lang.Enum<com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$ExpansionKind>
+
+CLSS public abstract interface static !annotation com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument$Field
+ outer com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterHandlerConfig$Argument
+ anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
+ anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[METHOD])
+intf java.lang.annotation.Annotation
+meth public abstract !hasdefault boolean nonNull()
+meth public abstract java.lang.String name()
 
 CLSS public abstract interface static !annotation com.oracle.truffle.api.HostCompilerDirectives$BytecodeInterpreterSwitch
  outer com.oracle.truffle.api.HostCompilerDirectives
@@ -150,6 +228,12 @@ CLSS public abstract interface static !annotation com.oracle.truffle.api.HostCom
 intf java.lang.annotation.Annotation
 
 CLSS public abstract interface static !annotation com.oracle.truffle.api.HostCompilerDirectives$InliningCutoff
+ outer com.oracle.truffle.api.HostCompilerDirectives
+ anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
+ anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[METHOD, CONSTRUCTOR])
+intf java.lang.annotation.Annotation
+
+CLSS public abstract interface static !annotation com.oracle.truffle.api.HostCompilerDirectives$InliningRoot
  outer com.oracle.truffle.api.HostCompilerDirectives
  anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
  anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[METHOD, CONSTRUCTOR])
@@ -175,6 +259,7 @@ CLSS public final static !enum com.oracle.truffle.api.InternalResource$CPUArchit
  outer com.oracle.truffle.api.InternalResource
 fld public final static com.oracle.truffle.api.InternalResource$CPUArchitecture AARCH64
 fld public final static com.oracle.truffle.api.InternalResource$CPUArchitecture AMD64
+fld public final static com.oracle.truffle.api.InternalResource$CPUArchitecture UNSUPPORTED
 meth public java.lang.String toString()
 meth public static com.oracle.truffle.api.InternalResource$CPUArchitecture getCurrent()
 meth public static com.oracle.truffle.api.InternalResource$CPUArchitecture valueOf(java.lang.String)
@@ -207,13 +292,14 @@ CLSS public final static !enum com.oracle.truffle.api.InternalResource$OS
  outer com.oracle.truffle.api.InternalResource
 fld public final static com.oracle.truffle.api.InternalResource$OS DARWIN
 fld public final static com.oracle.truffle.api.InternalResource$OS LINUX
+fld public final static com.oracle.truffle.api.InternalResource$OS UNSUPPORTED
 fld public final static com.oracle.truffle.api.InternalResource$OS WINDOWS
 meth public java.lang.String toString()
 meth public static com.oracle.truffle.api.InternalResource$OS getCurrent()
 meth public static com.oracle.truffle.api.InternalResource$OS valueOf(java.lang.String)
 meth public static com.oracle.truffle.api.InternalResource$OS[] values()
 supr java.lang.Enum<com.oracle.truffle.api.InternalResource$OS>
-hfds id
+hfds PROPERTY_ALLOW_UNSUPPORTED_PLATFORM,allowsUnsupportedPlatformValue,id
 
 CLSS public com.oracle.truffle.api.OptimizationFailedException
 cons public init(java.lang.Throwable,com.oracle.truffle.api.RootCallTarget)
@@ -354,6 +440,7 @@ fld public final static com.oracle.truffle.api.TruffleFile$AttributeDescriptor<j
 fld public final static com.oracle.truffle.api.TruffleFile$AttributeDescriptor<java.nio.file.attribute.UserPrincipal> UNIX_OWNER
 fld public final static com.oracle.truffle.api.TruffleFile$AttributeDescriptor<java.util.Set<java.nio.file.attribute.PosixFilePermission>> UNIX_PERMISSIONS
 innr public abstract interface static FileTypeDetector
+innr public final FileStoreInfo
 innr public final static AttributeDescriptor
 innr public final static Attributes
 meth public !varargs <%0 extends java.lang.Object> void setAttribute(com.oracle.truffle.api.TruffleFile$AttributeDescriptor<{%%0}>,{%%0},java.nio.file.LinkOption[]) throws java.io.IOException
@@ -405,6 +492,7 @@ meth public com.oracle.truffle.api.TruffleFile readSymbolicLink() throws java.io
 meth public com.oracle.truffle.api.TruffleFile relativize(com.oracle.truffle.api.TruffleFile)
 meth public com.oracle.truffle.api.TruffleFile resolve(java.lang.String)
 meth public com.oracle.truffle.api.TruffleFile resolveSibling(java.lang.String)
+meth public com.oracle.truffle.api.TruffleFile$FileStoreInfo getFileStoreInfo()
 meth public int hashCode()
 meth public java.io.BufferedReader newBufferedReader() throws java.io.IOException
 meth public java.io.BufferedReader newBufferedReader(java.nio.charset.Charset) throws java.io.IOException
@@ -435,6 +523,15 @@ CLSS public final static com.oracle.truffle.api.TruffleFile$Attributes
 meth public <%0 extends java.lang.Object> {%%0} get(com.oracle.truffle.api.TruffleFile$AttributeDescriptor<{%%0}>)
 supr java.lang.Object
 hfds delegate,queriedAttributes
+
+CLSS public final com.oracle.truffle.api.TruffleFile$FileStoreInfo
+ outer com.oracle.truffle.api.TruffleFile
+meth public boolean isReadOnly() throws java.io.IOException
+meth public long getBlockSize() throws java.io.IOException
+meth public long getTotalSpace() throws java.io.IOException
+meth public long getUnallocatedSpace() throws java.io.IOException
+meth public long getUsableSpace() throws java.io.IOException
+supr java.lang.Object
 
 CLSS public abstract interface static com.oracle.truffle.api.TruffleFile$FileTypeDetector
  outer com.oracle.truffle.api.TruffleFile
@@ -537,10 +634,14 @@ meth public boolean isCreateProcessAllowed()
 meth public boolean isCreateThreadAllowed()
 meth public boolean isFileIOAllowed()
 meth public boolean isHostException(java.lang.Throwable)
+ anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="25.1")
 meth public boolean isHostFunction(java.lang.Object)
+ anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="25.1")
 meth public boolean isHostLookupAllowed()
 meth public boolean isHostObject(java.lang.Object)
+ anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="25.1")
 meth public boolean isHostSymbol(java.lang.Object)
+ anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="25.1")
 meth public boolean isIOAllowed()
  anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="23.0")
 meth public boolean isInnerContextOptionsAllowed()
@@ -575,6 +676,7 @@ meth public java.io.OutputStream out()
 meth public java.lang.Object asBoxedGuestValue(java.lang.Object)
 meth public java.lang.Object asGuestValue(java.lang.Object)
 meth public java.lang.Object asHostObject(java.lang.Object)
+ anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="25.1")
 meth public java.lang.Object asHostSymbol(java.lang.Class<?>)
 meth public java.lang.Object createHostAdapter(java.lang.Object[])
 meth public java.lang.Object createHostAdapterClass(java.lang.Class<?>[])
@@ -602,6 +704,7 @@ meth public java.lang.Thread createThread(java.lang.Runnable,com.oracle.truffle.
 meth public java.lang.Thread createThread(java.lang.Runnable,com.oracle.truffle.api.TruffleContext,java.lang.ThreadGroup,long)
  anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="")
 meth public java.lang.Throwable asHostException(java.lang.Throwable)
+ anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="25.1")
 meth public java.time.ZoneId getTimeZone()
 meth public java.util.Map<java.lang.String,com.oracle.truffle.api.InstrumentInfo> getInstruments()
 meth public java.util.Map<java.lang.String,com.oracle.truffle.api.nodes.LanguageInfo> getInternalLanguages()
@@ -1151,10 +1254,10 @@ meth public java.lang.Object executeOSR(com.oracle.truffle.api.frame.VirtualFram
 meth public java.lang.Object executeOSR(com.oracle.truffle.api.frame.VirtualFrame,long,java.lang.Object)
 meth public java.lang.Object[] storeParentFrameInArguments(com.oracle.truffle.api.frame.VirtualFrame)
 meth public static boolean pollOSRBackEdge(com.oracle.truffle.api.nodes.BytecodeOSRNode)
+ anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="25.0")
+meth public static boolean pollOSRBackEdge(com.oracle.truffle.api.nodes.BytecodeOSRNode,int)
 meth public static java.lang.Object tryOSR(com.oracle.truffle.api.nodes.BytecodeOSRNode,int,java.lang.Object,java.lang.Runnable,com.oracle.truffle.api.frame.VirtualFrame)
 meth public static java.lang.Object tryOSR(com.oracle.truffle.api.nodes.BytecodeOSRNode,long,java.lang.Object,java.lang.Runnable,com.oracle.truffle.api.frame.VirtualFrame)
-meth public void copyIntoOSRFrame(com.oracle.truffle.api.frame.VirtualFrame,com.oracle.truffle.api.frame.VirtualFrame,int)
- anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="22.2")
 meth public void copyIntoOSRFrame(com.oracle.truffle.api.frame.VirtualFrame,com.oracle.truffle.api.frame.VirtualFrame,int,java.lang.Object)
 meth public void copyIntoOSRFrame(com.oracle.truffle.api.frame.VirtualFrame,com.oracle.truffle.api.frame.VirtualFrame,long,java.lang.Object)
 meth public void prepareOSR(int)
@@ -1705,7 +1808,7 @@ meth public void printStackTrace(java.io.PrintStream)
 meth public void printStackTrace(java.io.PrintWriter)
 meth public void setStackTrace(java.lang.StackTraceElement[])
 supr java.lang.Object
-hfds CAUSE_CAPTION,EMPTY_THROWABLE_ARRAY,NULL_CAUSE_MESSAGE,SELF_SUPPRESSION_MESSAGE,SUPPRESSED_CAPTION,SUPPRESSED_SENTINEL,UNASSIGNED_STACK,backtrace,cause,depth,detailMessage,serialVersionUID,stackTrace,suppressedExceptions
+hfds CAUSE_CAPTION,EMPTY_THROWABLE_ARRAY,NULL_CAUSE_MESSAGE,SELF_SUPPRESSION_MESSAGE,SUPPRESSED_CAPTION,SUPPRESSED_SENTINEL,UNASSIGNED_STACK,backtrace,cause,depth,detailMessage,jfrTracing,serialVersionUID,stackTrace,suppressedExceptions
 hcls PrintStreamOrWriter,SentinelHolder,WrappedPrintStream,WrappedPrintWriter
 
 CLSS public abstract interface java.lang.annotation.Annotation

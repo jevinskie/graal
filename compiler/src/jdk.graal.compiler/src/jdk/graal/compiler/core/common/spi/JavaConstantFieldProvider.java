@@ -27,6 +27,7 @@ package jdk.graal.compiler.core.common.spi;
 import java.util.Arrays;
 
 import jdk.graal.compiler.debug.GraalError;
+import jdk.graal.compiler.nodes.spi.CanonicalizerTool;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.vm.ci.meta.JavaConstant;
@@ -69,8 +70,11 @@ public abstract class JavaConstantFieldProvider implements ConstantFieldProvider
     public <T> T readConstantField(ResolvedJavaField field, ConstantFieldTool<T> tool) {
         if (isStableField(field, tool)) {
             JavaConstant value = tool.readValue();
-            if (value != null && isStableFieldValueConstant(field, value, tool)) {
-                return foldStableArray(value, field, tool);
+            if (value != null) {
+                onStableFieldRead(field, value, tool);
+                if (isStableFieldValueConstant(field, value, tool)) {
+                    return foldStableArray(value, field, tool);
+                }
             }
         }
         if (isFinalField(field, tool)) {
@@ -80,6 +84,17 @@ public abstract class JavaConstantFieldProvider implements ConstantFieldProvider
             }
         }
         return null;
+    }
+
+    /**
+     * Hook for subclasses to inspect the {@code value} read from the given {@code field}. The value
+     * can be the default for the given kind (i.e. the field will not actually be folded). The
+     * {@code value} will never be {@code null}, but it may be a {@code JavaConstant} representing
+     * null, which will happen when an object field with the default value is read.
+     */
+    @SuppressWarnings("unused")
+    protected void onStableFieldRead(ResolvedJavaField field, JavaConstant value, ConstantFieldTool<?> tool) {
+
     }
 
     protected <T> T foldStableArray(JavaConstant value, ResolvedJavaField field, ConstantFieldTool<T> tool) {
@@ -196,5 +211,10 @@ public abstract class JavaConstantFieldProvider implements ConstantFieldProvider
             }
         }
         return field.equals(stringValueField);
+    }
+
+    @Override
+    public boolean isTrustedFinal(CanonicalizerTool tool, ResolvedJavaField field) {
+        return false;
     }
 }

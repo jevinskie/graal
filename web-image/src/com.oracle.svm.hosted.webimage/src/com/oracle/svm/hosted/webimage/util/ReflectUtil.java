@@ -25,24 +25,26 @@
 
 package com.oracle.svm.hosted.webimage.util;
 
-import java.lang.annotation.Annotation;
-import java.lang.reflect.GenericSignatureFormatError;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.graalvm.collections.EconomicSet;
+import org.graalvm.collections.UnmodifiableEconomicSet;
 import org.graalvm.webimage.api.JS;
 
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
-import com.oracle.graal.pointsto.infrastructure.OriginalMethodProvider;
+import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
+import com.oracle.graal.pointsto.meta.AnalysisMethod;
+import com.oracle.graal.pointsto.meta.AnalysisType;
+import com.oracle.svm.hosted.ImageClassLoader;
+import com.oracle.svm.util.AnnotationUtil;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 
+import jdk.graal.compiler.debug.GraalError;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -51,107 +53,139 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  * Various reflection utilities that the normal Java reflection API does not expose.
  */
 public class ReflectUtil {
-    private static final HashSet<Method> OBJECT_METHODS;
-    private static final ConcurrentHashMap<ResolvedJavaType, Object> SAM_CACHE;
+    private static final ConcurrentHashMap<ResolvedJavaType, Object> SAM_CACHE = new ConcurrentHashMap<>();
+    private static UnmodifiableEconomicSet<String> objectMethodDescriptors;
 
-    static {
-        OBJECT_METHODS = new HashSet<>();
-        OBJECT_METHODS.addAll(Arrays.asList(Object.class.getMethods()));
-        SAM_CACHE = new ConcurrentHashMap<>();
+    private static synchronized UnmodifiableEconomicSet<String> getObjectMethodDescriptors(MetaAccessProvider metaAccess) {
+        if (objectMethodDescriptors == null) {
+            EconomicSet<String> descriptors = EconomicSet.create();
+            for (ResolvedJavaMethod declaredMethod : metaAccess.lookupJavaType(Object.class).getDeclaredMethods(false)) {
+                if (declaredMethod.isPublic()) {
+                    descriptors.add(fullDescriptor(declaredMethod));
+                }
+            }
+            objectMethodDescriptors = descriptors;
+        }
+
+        return objectMethodDescriptors;
+    }
+
+    private static String fullDescriptor(ResolvedJavaMethod method) {
+        return method.getName() + method.getSignature().toMethodDescriptor();
+    }
+
+    private static boolean isJavaLangObjectMethod(MetaAccessProvider metaAccess, ResolvedJavaMethod method) {
+        return getObjectMethodDescriptors(metaAccess).contains(fullDescriptor(method));
+    }
+
+    /// Checks if the interface type is a [FunctionalInterface], and returns its only single
+    /// abstract method if it is.
+    /// This follows
+    /// [JLS-9.8](https://docs.oracle.com/javase/specs/jls/se25/html/jls-9.html#jls-9.8) to
+    /// determine which method is the single abstract method.
+    public static Optional<ResolvedJavaMethod> singleAbstractMethodForInterface(MetaAccessProvider metaAccess, ResolvedJavaType javaInterface) {
+        GraalError.guarantee(javaInterface.isInterface(), "Got non-interface type %s", javaInterface);
+        if (!AnnotationUtil.isAnnotationPresent(javaInterface, FunctionalInterface.class)) {
+            return Optional.empty();
+        }
+
+        ResolvedJavaMethod singleMethod = null;
+
+        for (final ResolvedJavaMethod method : javaInterface.getDeclaredMethods(false)) {
+            /*
+             * Only abstract methods that do not match a public method in java.lang.Object can be
+             * single abstract methods (e.g. a functional interface could declare an abstract `int
+             * hashCode()`, which should be ignored when determining the single abstract method)
+             */
+            if (method.isAbstract() && !isJavaLangObjectMethod(metaAccess, method)) {
+                GraalError.guarantee(singleMethod == null,
+                                "Incorrect single abstract method logic for interface %s. Found at least two candidate methods: %s and %s",
+                                javaInterface,
+                                singleMethod,
+                                method);
+                singleMethod = method;
+            }
+
+        }
+
+        return Optional.ofNullable(singleMethod);
     }
 
     /**
-     * Checks if the interface type is a {@link FunctionalInterface}, and returns its only single
-     * abstract method if it is.
-     */
-    private static Optional<Method> singleAbstractMethodForInterface(Class<?> javaInterface) {
-        if (!javaInterface.isInterface()) {
-            return Optional.empty();
-        }
-
-        if (javaInterface.getAnnotation(FunctionalInterface.class) == null) {
-            return Optional.empty();
-        }
-
-        Method sam = null;
-        for (final Method method : javaInterface.getMethods()) {
-            if (OBJECT_METHODS.contains(method)) {
-                // Skip the methods from the Object class.
-                continue;
-            }
-            if (method.isDefault()) {
-                // Default methods do not count as single-abstract-method candidates.
-                continue;
-            }
-            sam = method;
-            break;
-        }
-
-        if (sam == null) {
-            return Optional.empty();
-        }
-
-        return Optional.of(sam);
-    }
-
-    /**
-     * Optionally returns a method of the class if that method implements the single abstract method
-     * of some functional interface that the class implements, and there is only one functional
-     * interface that the class implements.
+     * Optionally returns a method of the class if that method implements a unique "single abstract
+     * method" (SAM) of some functional interface. Even if it implements multiple functional
+     * interfaces, if the SAMs of those interfaces are compatible, a unique SAM can be determined.
+     *
+     * @param classType Must be a non-abstract instance class, otherwise returns an empty optional.
      */
     @SuppressWarnings("unchecked")
-    public static <M extends ResolvedJavaMethod & OriginalMethodProvider, T extends ResolvedJavaType & OriginalClassProvider> Optional<M> singleAbstractMethodForClass(MetaAccessProvider metaAccess,
-                    T classType) {
-        Optional<M> sam = (Optional<M>) SAM_CACHE.get(classType);
-        if (sam != null) {
-            return sam;
+    public static <M extends ResolvedJavaMethod> Optional<M> singleAbstractMethodForClass(MetaAccessProvider metaAccess, ResolvedJavaType classType) {
+        if (!classType.isInstanceClass() || classType.isAbstract()) {
+            /*
+             * Only concrete classes that can have an allocated instance need to know about their
+             * single abstract methods. For all other types we can avoid the computation (even
+             * though it could technically yield a result).
+             *
+             * Array and primitive types are also included here since they cannot implement a SAM.
+             */
+            return Optional.empty();
         }
-        sam = findSingleAbstractMethodForClass(metaAccess, classType);
-        SAM_CACHE.putIfAbsent(classType, sam);
-        return (Optional<M>) SAM_CACHE.get(classType);
+
+        return (Optional<M>) SAM_CACHE.computeIfAbsent(classType, t -> Optional.ofNullable((M) findSingleAbstractMethodForClass(metaAccess, t)));
     }
 
-    @SuppressWarnings("unchecked")
-    private static <M extends ResolvedJavaMethod & OriginalMethodProvider, T extends ResolvedJavaType & OriginalClassProvider> Optional<M> findSingleAbstractMethodForClass(
-                    MetaAccessProvider metaAccess, T classType) {
-        Class<?> javaClass = OriginalClassProvider.getJavaClass(classType);
-        LinkedHashSet<Class<?>> interfaces = new LinkedHashSet<>();
-        findAllInterfaces(javaClass, interfaces);
+    private static ResolvedJavaMethod findSingleAbstractMethodForClass(MetaAccessProvider metaAccess, ResolvedJavaType classType) {
+        assert classType.isLinked() : classType + " was not linked";
+        LinkedHashSet<ResolvedJavaType> interfaces = new LinkedHashSet<>();
+        findAllInterfaces(classType, interfaces);
 
-        Optional<Method> javaSam = Optional.empty();
-        for (final Class<?> i : interfaces) {
-            Optional<Method> candidate = singleAbstractMethodForInterface(i);
-            if (!candidate.isPresent()) {
+        /*
+         * Multiple different interface methods may resolve to the same concrete implementation. We
+         * use a set to deduplicate these.
+         */
+        EconomicSet<ResolvedJavaMethod> candidates = EconomicSet.create();
+        for (ResolvedJavaType i : interfaces) {
+            Optional<ResolvedJavaMethod> candidate = singleAbstractMethodForInterface(metaAccess, i);
+            if (candidate.isPresent()) {
+                ResolvedJavaMethod method = candidate.orElseThrow();
+                ResolvedJavaMethod concreteCandidate = classType.resolveConcreteMethod(method, method.getDeclaringClass());
+                if (concreteCandidate != null) {
+                    candidates.add(concreteCandidate);
+
+                    if (candidates.size() > 1) {
+                        // Break out early if there is now more than one candidate
+                        return null;
+                    }
+                } else {
+                    /*
+                     * Resolution may produce null for various reasons. One of them being that the
+                     * hosted method is not implementation invoked and thus doesn't exist in the
+                     * hosted universe.
+                     *
+                     * The method that failed resolution could be incompatible with other candidates
+                     * or not, we can't tell. This decision is unfortunately based on the analysis
+                     * outcome.
+                     *
+                     * If the resolution fails (for whatever reason) we treat it as if this class
+                     * does not have a unique SAM implementation.
+                     */
+                    candidates.clear();
+                    return null;
+                }
+            } else {
                 // This interface is not functional.
-                continue;
             }
-            if (javaSam.isPresent()) {
-                // Two candidates, so there is no single functional interface.
-                return Optional.empty();
-            }
-            javaSam = candidate;
         }
 
-        if (!javaSam.isPresent()) {
-            return Optional.empty();
+        if (candidates.size() == 1) {
+            return candidates.iterator().next();
+        } else {
+            // There are none or multiple candidates, so no unique SAM implementation.
+            return null;
         }
-
-        M sam = null;
-        ResolvedJavaType functionalInterface = metaAccess.lookupJavaType(javaSam.get().getDeclaringClass());
-        for (final ResolvedJavaMethod candidate : functionalInterface.getDeclaredMethods(false)) {
-            if (Objects.equals(OriginalMethodProvider.getJavaMethod(candidate), javaSam.get())) {
-                sam = (M) candidate;
-                break;
-            }
-        }
-        if (sam == null) {
-            return Optional.empty();
-        }
-        ResolvedJavaMethod resolved = classType.resolveConcreteMethod(sam, null);
-        return Optional.ofNullable((M) resolved);
     }
 
-    private static void findAllInterfaces(Class<?> type, LinkedHashSet<Class<?>> interfaces) {
+    private static void findAllInterfaces(ResolvedJavaType type, LinkedHashSet<ResolvedJavaType> interfaces) {
         if (interfaces.contains(type)) {
             return;
         }
@@ -160,7 +194,7 @@ public class ReflectUtil {
             interfaces.add(type);
         }
 
-        for (final Class<?> superInterface : type.getInterfaces()) {
+        for (ResolvedJavaType superInterface : type.getInterfaces()) {
             findAllInterfaces(superInterface, interfaces);
         }
 
@@ -169,92 +203,44 @@ public class ReflectUtil {
         }
     }
 
-    public static Set<Method> findBaseMethodsOfJSAnnotated(List<Class<?>> allClasses) {
-        HashSet<Method> set = new HashSet<>();
-        for (Class<?> cls : allClasses) {
-            Method[] declaredMethods;
-            try {
-                declaredMethods = cls.getDeclaredMethods();
-            } catch (NoClassDefFoundError e) {
-                // Some classes may be missing on the class path, but these will not be used by the
-                // image.
-                continue;
-            } catch (VerifyError | ClassFormatError | ClassCircularityError | IllegalAccessError e) {
-                // Skip the corrupted class encountered during the analysis.
-                System.err.printf(
-                                "Skipped JS annotated base methods lookup for class %s.%nError: %s, Message: %s.%n",
-                                cls.getName(),
-                                e.getClass().getName(),
-                                e.getMessage());
-                continue;
-            }
-            for (Method method : declaredMethods) {
-                Annotation jsAnnotation;
-                try {
-                    jsAnnotation = method.getAnnotation(JS.class);
-                } catch (GenericSignatureFormatError e) {
-                    // Skip the corrupted method encountered during the analysis.
-                    System.err.printf(
-                                    "Skipped JS annotated base methods lookup for method %s::%s.%nError: %s, Message: %s.%n",
-                                    method.getDeclaringClass().getName(),
-                                    method.getName(),
-                                    e.getClass().getName(),
-                                    e.getMessage());
-                    continue;
-                }
-                if (jsAnnotation != null) {
-                    markBaseMethods(method, cls, set, new HashSet<>());
-                }
-            }
+    /**
+     * Finds all methods annotated with {@link JS} as well as all the methods it overrides.
+     */
+    public static Set<AnalysisMethod> findBaseMethodsOfJSAnnotated(AnalysisMetaAccess metaAccess, ImageClassLoader imageClassLoader) {
+        Set<AnalysisMethod> methods = new HashSet<>();
+
+        List<Method> annotatedMethods = imageClassLoader.findAnnotatedMethods(JS.class);
+
+        for (Method annotatedMethod : annotatedMethods) {
+            AnalysisMethod aMethod = metaAccess.lookupJavaMethod(annotatedMethod);
+            findBaseMethods(aMethod, aMethod.getDeclaringClass(), methods);
         }
-        return set;
+
+        return methods;
     }
 
-    private static void markBaseMethods(Method method, Class<?> type, HashSet<Method> set, HashSet<Class<?>> seen) {
-        if (seen.contains(type)) {
-            // We already saw this type -- we skip it to avoid traversing an interface type twice.
-            return;
-        }
-        seen.add(type);
-        if (!set.contains(method)) {
-            set.add(method);
-        }
-        if (Modifier.isPrivate(method.getModifiers()) || Modifier.isStatic(method.getModifiers())) {
-            // Private and static methods cannot override anything.
-            return;
-        }
-        resolveAndMarkBaseMethods(method, type.getSuperclass(), set, seen);
-        for (Class<?> i : type.getInterfaces()) {
-            resolveAndMarkBaseMethods(method, i, set, seen);
-        }
-    }
-
-    private static void resolveAndMarkBaseMethods(Method method, Class<?> type, HashSet<Method> set, HashSet<Class<?>> seen) {
+    /**
+     * Finds all methods the given {@code originalMethod} overrides (including itself) from the
+     * given class upwards and adds them to the given set.
+     */
+    private static void findBaseMethods(AnalysisMethod originalMethod, ResolvedJavaType type, Set<AnalysisMethod> jsOverridenMethodSet) {
         if (type == null) {
-            // We reached Object's superclass.
             return;
         }
-        for (Method declaredMethod : type.getDeclaredMethods()) {
-            if (isOverriding(method, declaredMethod)) {
-                markBaseMethods(declaredMethod, type, set, seen);
-                return;
-            }
+
+        // This is either the same method as originalMethod or a method it overrides.
+        AnalysisMethod baseMethod = (AnalysisMethod) JVMCIReflectionUtil.getUniqueDeclaredMethod(true, type, originalMethod.getName(),
+                        originalMethod.toParameterList().toArray(AnalysisType.EMPTY_ARRAY));
+
+        if (baseMethod != null) {
+            jsOverridenMethodSet.add(baseMethod);
         }
-        // There is no override in the current class, continue using the subtype's method.
-        markBaseMethods(method, type, set, seen);
+
+        for (ResolvedJavaType clazzInterface : type.getInterfaces()) {
+            findBaseMethods(originalMethod, clazzInterface, jsOverridenMethodSet);
+        }
+
+        findBaseMethods(originalMethod, type.getSuperclass(), jsOverridenMethodSet);
     }
 
-    private static boolean isOverriding(Method method, Method baseMethod) {
-        if (method.getParameterCount() != baseMethod.getParameterCount() || !method.getName().equals(baseMethod.getName())) {
-            return false;
-        }
-        Class<?>[] parameters = method.getParameterTypes();
-        Class<?>[] baseParameters = baseMethod.getParameterTypes();
-        for (int i = 0; i < parameters.length; i++) {
-            if (!parameters[i].equals(baseParameters[i])) {
-                return false;
-            }
-        }
-        return true;
-    }
 }

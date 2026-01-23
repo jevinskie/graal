@@ -24,6 +24,7 @@
  */
 package com.oracle.svm.core.genscavenge.graal;
 
+import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static jdk.graal.compiler.core.common.spi.ForeignCallDescriptor.CallSideEffect.NO_SIDE_EFFECT;
 
 import org.graalvm.word.UnsignedWord;
@@ -35,7 +36,6 @@ import com.oracle.svm.core.genscavenge.ThreadLocalAllocation;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
 import com.oracle.svm.core.graal.snippets.GCAllocationSupport;
 import com.oracle.svm.core.heap.Pod;
-import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.snippets.SnippetRuntime.SubstrateForeignCallDescriptor;
 import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
@@ -43,7 +43,7 @@ import com.oracle.svm.core.stack.StackOverflowCheck;
 import com.oracle.svm.core.thread.ContinuationSupport;
 
 import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.Word;
 
 /**
  * This class contains the {@link SubstrateForeignCallTarget}s for the allocation slow path. These
@@ -56,7 +56,6 @@ public class GenScavengeAllocationSupport implements GCAllocationSupport {
     private static final SubstrateForeignCallDescriptor SLOW_NEW_ARRAY = SnippetRuntime.findForeignCall(GenScavengeAllocationSupport.class, "slowNewArray", NO_SIDE_EFFECT);
     private static final SubstrateForeignCallDescriptor SLOW_NEW_STORED_CONTINUATION = SnippetRuntime.findForeignCall(GenScavengeAllocationSupport.class, "slowNewStoredContinuation", NO_SIDE_EFFECT);
     private static final SubstrateForeignCallDescriptor SLOW_NEW_POD_INSTANCE = SnippetRuntime.findForeignCall(GenScavengeAllocationSupport.class, "slowNewPodInstance", NO_SIDE_EFFECT);
-    private static final SubstrateForeignCallDescriptor NEW_DYNAMICHUB = SnippetRuntime.findForeignCall(GenScavengeAllocationSupport.class, "newDynamicHub", NO_SIDE_EFFECT);
     private static final SubstrateForeignCallDescriptor[] UNCONDITIONAL_FOREIGN_CALLS = new SubstrateForeignCallDescriptor[]{SLOW_NEW_INSTANCE, SLOW_NEW_ARRAY};
 
     public static void registerForeignCalls(SubstrateForeignCallsProvider foreignCalls) {
@@ -66,9 +65,6 @@ public class GenScavengeAllocationSupport implements GCAllocationSupport {
         }
         if (Pod.RuntimeSupport.isPresent()) {
             foreignCalls.register(SLOW_NEW_POD_INSTANCE);
-        }
-        if (RuntimeClassLoading.isSupported()) {
-            foreignCalls.register(NEW_DYNAMICHUB);
         }
     }
 
@@ -93,16 +89,6 @@ public class GenScavengeAllocationSupport implements GCAllocationSupport {
     }
 
     @Override
-    public SubstrateForeignCallDescriptor getNewDynamicHub() {
-        return NEW_DYNAMICHUB;
-    }
-
-    @Override
-    public boolean useTLAB() {
-        return true;
-    }
-
-    @Override
     public boolean shouldAllocateInTLAB(UnsignedWord size, boolean isArray) {
         return !isArray || arrayAllocatedInAlignedChunk(size);
     }
@@ -122,6 +108,7 @@ public class GenScavengeAllocationSupport implements GCAllocationSupport {
         return ThreadLocalAllocation.Descriptor.offsetOfAllocationEnd();
     }
 
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static boolean arrayAllocatedInAlignedChunk(UnsignedWord objectSize) {
         return objectSize.belowThan(HeapParameters.getLargeArrayThreshold());
     }
@@ -175,11 +162,6 @@ public class GenScavengeAllocationSupport implements GCAllocationSupport {
         } finally {
             StackOverflowCheck.singleton().protectYellowZone();
         }
-    }
-
-    @SubstrateForeignCallTarget(stubCallingConvention = false)
-    private static Object newDynamicHub(int vTableSlots) {
-        return HeapImpl.allocateDynamicHub(vTableSlots);
     }
 
     @Uninterruptible(reason = "Switch from uninterruptible to interruptible code.", calleeMustBe = false)

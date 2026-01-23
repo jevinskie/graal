@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,12 +24,8 @@
  */
 package com.oracle.svm.core.graal.phases;
 
-import jdk.graal.compiler.nodes.ReturnNode;
-import jdk.graal.compiler.nodes.SafepointNode;
-import jdk.graal.compiler.nodes.StructuredGraph;
-import jdk.graal.compiler.phases.common.LoopSafepointInsertionPhase;
-import jdk.graal.compiler.phases.tiers.MidTierContext;
-import org.graalvm.nativeimage.AnnotationAccess;
+import com.oracle.svm.core.SkipEpilogueSafepointCheck;
+import com.oracle.svm.util.RuntimeAnnotated;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CFunction;
@@ -38,7 +34,13 @@ import org.graalvm.nativeimage.c.function.InvokeCFunctionPointer;
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.graal.code.SubstrateBackend;
 import com.oracle.svm.core.meta.SharedMethod;
+import com.oracle.svm.util.AnnotationUtil;
 
+import jdk.graal.compiler.nodes.ReturnNode;
+import jdk.graal.compiler.nodes.SafepointNode;
+import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.phases.common.LoopSafepointInsertionPhase;
+import jdk.graal.compiler.phases.tiers.MidTierContext;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 /**
@@ -52,7 +54,7 @@ public class SubstrateSafepointInsertionPhase extends LoopSafepointInsertionPhas
             /* Uninterruptible methods must not have a safepoint inserted. */
             return false;
         }
-        if (AnnotationAccess.isAnnotationPresent(method, CFunction.class) || AnnotationAccess.isAnnotationPresent(method, InvokeCFunctionPointer.class)) {
+        if (AnnotationUtil.isAnnotationPresent(method, CFunction.class) || AnnotationUtil.isAnnotationPresent(method, InvokeCFunctionPointer.class)) {
             /*
              * Methods transferring from Java to C have an implicit safepoint check as part of the
              * transition from C back to Java. So no explicit end-of-method safepoint check needs to
@@ -77,7 +79,8 @@ public class SubstrateSafepointInsertionPhase extends LoopSafepointInsertionPhas
      */
     public static void insertMethodEndSafepoints(StructuredGraph graph, MidTierContext context) {
         SharedMethod method = (SharedMethod) graph.method();
-        if (!((SubstrateBackend) context.getTargetProvider()).safepointCheckedInEpilogue(method)) {
+        if (!((SubstrateBackend) context.getTargetProvider()).safepointCheckedInEpilogue(method) &&
+                        !(method instanceof RuntimeAnnotated && AnnotationUtil.isAnnotationPresent(method, SkipEpilogueSafepointCheck.class))) {
             /* Insert method-end safepoints. */
             for (ReturnNode returnNode : graph.getNodes(ReturnNode.TYPE)) {
                 SafepointNode safepointNode = graph.add(new SafepointNode());

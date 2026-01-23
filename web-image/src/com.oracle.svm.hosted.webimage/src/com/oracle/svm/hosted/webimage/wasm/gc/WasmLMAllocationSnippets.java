@@ -29,6 +29,7 @@ import java.util.Map;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.genscavenge.graal.nodes.FormatArrayNode;
 import com.oracle.svm.core.genscavenge.graal.nodes.FormatObjectNode;
@@ -53,7 +54,6 @@ import jdk.graal.compiler.replacements.SnippetTemplate;
 import jdk.graal.compiler.replacements.SnippetTemplate.Arguments;
 import jdk.graal.compiler.replacements.SnippetTemplate.SnippetInfo;
 import jdk.graal.compiler.replacements.Snippets;
-import jdk.graal.compiler.word.Word;
 
 public final class WasmLMAllocationSnippets implements Snippets {
     @Snippet
@@ -111,7 +111,7 @@ public final class WasmLMAllocationSnippets implements Snippets {
                 if (graph.getGuardsStage().areFrameStatesAtSideEffects()) {
                     return;
                 }
-                Arguments args = new Arguments(formatObject, graph.getGuardsStage(), tool.getLoweringStage());
+                Arguments args = new Arguments(formatObject, graph, tool.getLoweringStage());
                 args.add("memory", node.getMemory());
                 args.add("hub", node.getHub());
                 args.add("rememberedSet", node.getRememberedSet());
@@ -129,7 +129,7 @@ public final class WasmLMAllocationSnippets implements Snippets {
                 if (graph.getGuardsStage().areFrameStatesAtSideEffects()) {
                     return;
                 }
-                Arguments args = new Arguments(formatArray, graph.getGuardsStage(), tool.getLoweringStage());
+                Arguments args = new Arguments(formatArray, graph, tool.getLoweringStage());
                 args.add("memory", node.getMemory());
                 args.add("hub", node.getHub());
                 args.add("length", node.getLength());

@@ -381,7 +381,7 @@ public class SerializationTutorial {
      * <ol>
      * <li>A {@link TruffleLanguage} language used when creating each root node</li>
      * <li>A {@link BytecodeConfig} config that specifies which metadata to parse from the
-     * serialized byte (serialization encodes all metadata).</li>
+     * serialized bytes (serialization encodes all metadata).</li>
      * <li>A {@link Supplier<DataInput>} a callable that supplies a {@link DataInput} to read.
      * Deserialization can happen multiple times because of reparsing. The supplier is responsible
      * for producing a fresh {@link DataInput} each time it is called.</li>
@@ -396,7 +396,7 @@ public class SerializationTutorial {
         byte[] serialized = output.toByteArray();
 
         // Now, deserialize the bytes to produce a BytecodeRootNodes instance.
-        Supplier<DataInput> supplier = () -> SerializationUtils.createDataInput(ByteBuffer.wrap(serialized));
+        Supplier<DataInput> supplier = () -> SerializationUtils.createByteBufferDataInput(ByteBuffer.wrap(serialized));
         BytecodeRootNodes<SerializableBytecodeNode> nodes = SerializableBytecodeNodeGen.deserialize(
                         getLanguage(),
                         BytecodeConfig.DEFAULT,
@@ -449,7 +449,7 @@ public class SerializationTutorial {
         byte[] serialized = output.toByteArray();
 
         // Now, deserialize (just like before).
-        Supplier<DataInput> supplier = () -> SerializationUtils.createDataInput(ByteBuffer.wrap(serialized));
+        Supplier<DataInput> supplier = () -> SerializationUtils.createByteBufferDataInput(ByteBuffer.wrap(serialized));
         BytecodeRootNodes<SerializableBytecodeNode> deserializedNodes = SerializableBytecodeNodeGen.deserialize(
                         getLanguage(),
                         BytecodeConfig.DEFAULT,
@@ -588,7 +588,7 @@ public class SerializationTutorial {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         SerializableBytecodeNodeGen.serialize(new DataOutputStream(output), new ExampleBytecodeSerializerWithSources(), PARSER_WITH_SOURCES);
         byte[] serialized = output.toByteArray();
-        Supplier<DataInput> supplier = () -> SerializationUtils.createDataInput(ByteBuffer.wrap(serialized));
+        Supplier<DataInput> supplier = () -> SerializationUtils.createByteBufferDataInput(ByteBuffer.wrap(serialized));
         BytecodeRootNodes<SerializableBytecodeNode> nodes = SerializableBytecodeNodeGen.deserialize(
                         getLanguage(),
                         BytecodeConfig.DEFAULT,
@@ -715,7 +715,7 @@ public class SerializationTutorial {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         nodes.serialize(new DataOutputStream(output), new ExampleBytecodeSerializerWithRootNodes());
         byte[] serialized = output.toByteArray();
-        Supplier<DataInput> supplier = () -> SerializationUtils.createDataInput(ByteBuffer.wrap(serialized));
+        Supplier<DataInput> supplier = () -> SerializationUtils.createByteBufferDataInput(ByteBuffer.wrap(serialized));
         BytecodeRootNodes<SerializableBytecodeNode> roundTripNodes = SerializableBytecodeNodeGen.deserialize(
                         getLanguage(),
                         BytecodeConfig.DEFAULT,

@@ -28,7 +28,6 @@ package com.oracle.svm.core.nmt;
 
 import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
-import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
@@ -39,18 +38,19 @@ import org.graalvm.word.UnsignedWord;
 
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.VMInspectionOptions;
-import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.jdk.RuntimeSupport;
 import com.oracle.svm.core.memory.NativeMemory;
+import com.oracle.svm.core.os.ImageHeapProvider;
 import com.oracle.svm.core.util.UnsignedUtils;
 
 import jdk.graal.compiler.api.replacements.Fold;
+import org.graalvm.word.impl.Word;
 
 /**
  * This class implements native memory tracking (NMT). There are two components to NMT: tracking
  * memory allocations (malloc/realloc/calloc), and tracking virtual memory usage (not supported
  * yet).
- * 
+ *
  * For tracking memory allocations, we have an internal API (see {@link NativeMemory}) that adds a
  * custom {@link NmtMallocHeader header} to each allocation if NMT is enabled. This header stores
  * data that is needed to properly untrack the memory when it is freed.
@@ -312,15 +312,14 @@ public class NativeMemoryTracking {
     }
 
     public static RuntimeSupport.Hook initializationHook() {
-        return isFirstIsolate -> {
-            // Track the image heap virtual memory usage.
-            NativeMemoryTracking.singleton().trackReserve(Heap.getHeap().getImageHeapReservedBytes(), NmtCategory.ImageHeap);
-            NativeMemoryTracking.singleton().trackCommit(Heap.getHeap().getImageHeapCommittedBytes(), NmtCategory.ImageHeap);
+        return _ -> {
+            NativeMemoryTracking.singleton().trackReserve(ImageHeapProvider.get().getImageHeapReservedBytes(), NmtCategory.ImageHeap);
+            NativeMemoryTracking.singleton().trackCommit(ImageHeapProvider.get().getImageHeapMappedBytes(), NmtCategory.ImageHeap);
         };
     }
 
     public static RuntimeSupport.Hook shutdownHook() {
-        return isFirstIsolate -> {
+        return _ -> {
             NativeMemoryTracking.singleton().printStatistics();
         };
     }

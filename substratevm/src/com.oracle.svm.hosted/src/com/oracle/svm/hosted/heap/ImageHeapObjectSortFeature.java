@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,24 +22,26 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package com.oracle.svm.graal.pltgot;
+package com.oracle.svm.hosted.heap;
 
-import com.oracle.svm.core.nodes.SubstrateIndirectCallTargetNode;
+import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.core.image.DefaultImageHeapObjectSorter;
+import com.oracle.svm.core.image.ImageHeapObjectSorter;
+import com.oracle.svm.core.traits.BuiltinTraits;
+import com.oracle.svm.core.traits.SingletonTraits;
+import org.graalvm.nativeimage.ImageSingletons;
 
-import jdk.graal.compiler.core.common.type.StampPair;
-import jdk.graal.compiler.graph.NodeClass;
-import jdk.graal.compiler.nodeinfo.NodeInfo;
-import jdk.graal.compiler.nodes.ValueNode;
-import jdk.vm.ci.code.CallingConvention;
-import jdk.vm.ci.meta.JavaType;
-import jdk.vm.ci.meta.ResolvedJavaMethod;
+@SingletonTraits(access = BuiltinTraits.BuildtimeAccessOnly.class, layeredCallbacks = BuiltinTraits.NoLayeredCallbacks.class)
+@AutomaticallyRegisteredFeature
+public class ImageHeapObjectSortFeature implements InternalFeature {
 
-@NodeInfo
-public final class SubstrateGOTCallTargetNode extends SubstrateIndirectCallTargetNode {
-    public static final NodeClass<SubstrateGOTCallTargetNode> TYPE = NodeClass.create(SubstrateGOTCallTargetNode.class);
+    @Override
+    public void beforeHeapLayout(BeforeHeapLayoutAccess access) {
+        ImageSingletons.add(ImageHeapObjectSorter.class, createImageHeapObjectSorter());
+    }
 
-    public SubstrateGOTCallTargetNode(ValueNode computedAddress, ValueNode[] arguments, StampPair returnStamp, JavaType[] signature, ResolvedJavaMethod target, CallingConvention.Type callType,
-                    InvokeKind invokeKind) {
-        super(TYPE, computedAddress, arguments, returnStamp, signature, target, callType, invokeKind, null, null);
+    protected ImageHeapObjectSorter createImageHeapObjectSorter() {
+        return new DefaultImageHeapObjectSorter();
     }
 }

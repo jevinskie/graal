@@ -22,31 +22,29 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package com.oracle.svm.interpreter.ristretto.profile;
+package com.oracle.svm.core.image;
 
-import com.oracle.svm.interpreter.ristretto.meta.RistrettoMethod;
+import java.util.Comparator;
+import java.util.List;
 
-import jdk.graal.compiler.nodes.spi.ProfileProvider;
-import jdk.vm.ci.meta.ProfilingInfo;
-import jdk.vm.ci.meta.ResolvedJavaMethod;
+public class DefaultImageHeapObjectSorter extends ImageHeapObjectSorter implements Comparator<ImageHeapObject> {
 
-public final class RistrettoProfileProvider implements ProfileProvider {
-    private final RistrettoProfilingInfo info;
-
-    public RistrettoProfileProvider(RistrettoMethod rMethod) {
-        this.info = new RistrettoProfilingInfo(rMethod.getProfile());
+    @Override
+    protected void doSort(List<ImageHeapObject> objects, Comparator<ImageHeapObject> primaryComparator) {
+        objects.sort(primaryComparator.thenComparing(this));
     }
 
     @Override
-    public ProfilingInfo getProfilingInfo(ResolvedJavaMethod method) {
-        return info;
-    }
+    public int compare(ImageHeapObject a, ImageHeapObject b) {
+        int groupResult = compareGroup(a, b);
+        if (groupResult != 0) {
+            return groupResult;
+        }
 
-    @Override
-    public ProfilingInfo getProfilingInfo(ResolvedJavaMethod method, boolean includeNormal, boolean includeOSR) {
-        /*
-         * TODO GR-71494 - no OSR support for now
-         */
-        return getProfilingInfo(method);
+        if (isLarge(a)) {
+            return Long.signum(b.getSize() - a.getSize());
+        }
+
+        return 0;
     }
 }

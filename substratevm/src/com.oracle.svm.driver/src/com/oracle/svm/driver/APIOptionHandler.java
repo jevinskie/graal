@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -46,29 +46,28 @@ import org.graalvm.nativeimage.ImageInfo;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.hosted.Feature;
 
-import com.oracle.svm.common.option.CommonOptionParser;
-import com.oracle.svm.common.option.IntentionallyUnsupportedOptions;
-import com.oracle.svm.common.option.LocatableOption;
-import com.oracle.svm.common.option.MultiOptionValue;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.APIOption;
-import com.oracle.svm.core.option.APIOption.APIOptionKind;
-import com.oracle.svm.core.option.APIOptionGroup;
-import com.oracle.svm.core.option.BundleMember;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.OptionOrigin;
-import com.oracle.svm.core.option.OptionUtils;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.driver.APIOptionHandler.HostedOptionInfo;
 import com.oracle.svm.driver.NativeImage.ArgumentQueue;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.option.HostedOptionParser;
-import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ModuleSupport;
-import com.oracle.svm.util.ReflectionUtil;
-import com.oracle.svm.util.ReflectionUtil.ReflectionUtilError;
-import com.oracle.svm.util.StringUtil;
+import com.oracle.svm.shared.option.APIOption;
+import com.oracle.svm.shared.option.APIOption.APIOptionKind;
+import com.oracle.svm.shared.option.APIOptionGroup;
+import com.oracle.svm.shared.option.BundleMember;
+import com.oracle.svm.shared.option.CommonOptionParser;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.IntentionallyUnsupportedOptions;
+import com.oracle.svm.shared.option.LocatableOption;
+import com.oracle.svm.shared.option.MultiOptionValue;
+import com.oracle.svm.shared.option.OptionOrigin;
+import com.oracle.svm.shared.option.OptionUtils;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.ReflectionUtil.ReflectionUtilError;
+import com.oracle.svm.shared.util.StringUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.options.OptionDescriptor;
 import jdk.graal.compiler.options.OptionDescriptors;
@@ -432,7 +431,7 @@ class APIOptionHandler extends NativeImage.OptionHandler<NativeImage> {
                         continue;
                     }
 
-                    return headArg.replace(APIOption.Utils.optionName(optionInfo.group.name()), "-H:" + optionInfo.group.multiValueOption().getName());
+                    return headArg.replace(APIOption.Utils.optionName(optionInfo.group.name()), NativeImage.oH + optionInfo.group.multiValueOption().getName());
                 } else {
                     optionName = APIOption.Utils.groupName(optionInfo.group) + variant;
                 }
@@ -618,6 +617,10 @@ class APIOptionHandler extends NativeImage.OptionHandler<NativeImage> {
         });
     }
 
+    void printComprehensiveOptions(Consumer<String> println, String format) {
+        ComprehensiveOptions.printOptions(println, format, apiOptions, groupInfos);
+    }
+
     private static void printGroupOption(Consumer<String> println, String groupName, List<OptionInfo> options) {
         APIOptionGroup group = options.get(0).group;
         assert group != null;
@@ -714,12 +717,6 @@ record APIOptionSupport(Map<String, GroupInfo> groupInfos, SortedMap<String, API
 }
 
 final class APIOptionFeature implements Feature {
-
-    @Override
-    public void afterRegistration(AfterRegistrationAccess access) {
-        ModuleSupport.accessPackagesToClass(ModuleSupport.Access.EXPORT, APIOptionFeature.class, true,
-                        "jdk.graal.compiler", "jdk.graal.compiler.options");
-    }
 
     @Override
     public void duringSetup(DuringSetupAccess access) {

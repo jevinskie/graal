@@ -28,9 +28,12 @@ import java.util.GregorianCalendar;
 
 import org.graalvm.nativeimage.hosted.RuntimeReflection;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.util.GraalAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.util.GuestAccess;
 import com.oracle.svm.util.JVMCIReflectionUtil;
 import com.oracle.svm.util.OriginalMethodProvider;
 
@@ -38,6 +41,7 @@ import jdk.vm.ci.meta.ResolvedJavaType;
 import sun.util.calendar.JulianCalendar;
 
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class CalendarFeature implements InternalFeature {
 
     @Override
@@ -59,6 +63,7 @@ public class CalendarFeature implements InternalFeature {
     private static void initializeCalendarSystem(InternalFeatureAccess access) {
         ResolvedJavaType calendarSystem = access.findTypeByName("sun.util.calendar.CalendarSystem");
         var forName = JVMCIReflectionUtil.getUniqueDeclaredMethod(access.getMetaAccess(), calendarSystem, "forName", String.class);
-        GraalAccess.getVMAccess().invoke(OriginalMethodProvider.getOriginalMethod(forName), null, GraalAccess.getOriginalSnippetReflection().forObject("julian"));
+        GuestAccess guestAccess = GuestAccess.get();
+        guestAccess.invoke(OriginalMethodProvider.getOriginalMethod(forName), null, guestAccess.getSnippetReflection().forObject("julian"));
     }
 }

@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.genscavenge.graal;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static jdk.graal.compiler.core.common.spi.ForeignCallDescriptor.CallSideEffect.NO_SIDE_EFFECT;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.FREQUENT_PROBABILITY;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.NOT_FREQUENT_PROBABILITY;
@@ -40,7 +40,6 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.genscavenge.ObjectHeaderImpl;
 import com.oracle.svm.core.genscavenge.SerialGCOptions;
 import com.oracle.svm.core.genscavenge.remset.RememberedSet;
@@ -52,7 +51,9 @@ import com.oracle.svm.core.heap.ObjectHeader;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
+import com.oracle.svm.shared.Uninterruptible;
 
+import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.api.replacements.Snippet;
 import jdk.graal.compiler.api.replacements.Snippet.ConstantParameter;
 import jdk.graal.compiler.core.common.GraalOptions;
@@ -157,7 +158,7 @@ public class BarrierSnippets extends SubstrateTemplates implements Snippets {
 
     @Snippet
     public static void postWriteBarrierSnippet(Object object, Address address, @ConstantParameter boolean shouldOutline, @ConstantParameter boolean precise, @ConstantParameter boolean eliminated) {
-        boolean shouldVerify = SerialGCOptions.VerifyWriteBarriers.getValue();
+        boolean shouldVerify = getWriteBarriersValue();
         if (!shouldVerify && eliminated) {
             return;
         }
@@ -201,6 +202,16 @@ public class BarrierSnippets extends SubstrateTemplates implements Snippets {
 
         RememberedSet.get().dirtyCardForAlignedObject(fixedObject, eliminated);
 
+    }
+
+    /**
+     * Workaround for {@code CheckSVMInvariant} since HostedOptionValue.getValue() is no longer
+     * folded on hotspot, which makes {@code SVMInvariantsCheck} complain. Factoring it out in its
+     * own {@link Fold} method avoids this issue.
+     */
+    @Fold
+    static Boolean getWriteBarriersValue() {
+        return SerialGCOptions.VerifyWriteBarriers.getValue();
     }
 
     @Snippet

@@ -60,7 +60,7 @@ public class MethodFlowsGraph implements MethodFlowsGraphInfo {
          * A full MethodFlowsGraph has the full internal flow. Whether the graph flows for all
          * object parameters and return values, regardless of whether they are linked to the
          * internal flows, is dependent on
-         * {@code HostVM.MultiMethodAnalysisPolicy#insertPlaceholderParamAndReturnFlows}.
+         * {@code HostVM.MethodVariantsAnalysisPolicy#insertPlaceholderParamAndReturnFlows}.
          */
         FULL,
     }
@@ -369,7 +369,7 @@ public class MethodFlowsGraph implements MethodFlowsGraphInfo {
                     InvokeTypeFlow invoke = callerInvoke;
                     if (InvokeTypeFlow.isContextInsensitiveVirtualInvoke(callerInvoke)) {
                         /* The invoke has been replaced by the context insensitive one. */
-                        invoke = callerInvoke.getTargetMethod().getContextInsensitiveVirtualInvoke(method.getMultiMethodKey());
+                        invoke = callerInvoke.getTargetMethod().getContextInsensitiveVirtualInvoke(method.getMethodVariantKey());
                     }
                     for (MethodFlowsGraph calleeFlowGraph : invoke.getAllNonStubCalleesFlows(bb)) {
                         // 'this' method graph was found among the callees of an invoke flow in one
@@ -484,12 +484,22 @@ public class MethodFlowsGraph implements MethodFlowsGraphInfo {
         }
 
         /*
-         * Saturate the return of virtual invokes that could return new types from the open world.
-         * Returns from methods that cannot be overwritten, i.e., the receiver type is closed, are
-         * not saturated.
+         * Saturate the return of invokes that could return new types from the open world or that
+         * can only be invoked on open world receiver types. This applies to virtual invokes which
+         * may link to open world callees. It also applies to special invokes to target methods
+         * declared in abstract types: since the type may only be implemented in the open world the
+         * invokes may not otherwise be linked during analysis. In predicated points-to analysis
+         * this matters also for void methods since their successful execution (modeled by an
+         * ActualReturnTypeFlow) predicates subsequents statements in the caller. However, returns
+         * from methods that cannot be overwritten, i.e., the receiver type is closed, are not
+         * saturated. Similarly, we don't need to saturate the return of static invokes or the
+         * return of special invokes to methods in concrete classes since the analysis will resolve
+         * the concrete callee, and it will analyze it.
          */
         for (InvokeTypeFlow invokeTypeFlow : getInvokes()) {
-            if (!invokeTypeFlow.isDirectInvoke() && !bb.isClosed(invokeTypeFlow.getReceiverType())) {
+            AnalysisType receiverType = invokeTypeFlow.getReceiverType();
+            if ((invokeTypeFlow.isDirectInvoke() && receiverType != null && receiverType.isAbstract() ||
+                            !invokeTypeFlow.isDirectInvoke()) && !bb.isClosed(receiverType)) {
                 invokeTypeFlow.saturateForOpenTypeWorld(bb);
             }
         }

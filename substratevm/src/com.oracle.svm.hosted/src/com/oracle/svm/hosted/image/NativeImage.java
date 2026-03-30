@@ -25,8 +25,8 @@
 package com.oracle.svm.hosted.image;
 
 import static com.oracle.svm.core.SubstrateOptions.SpawnIsolates;
-import static com.oracle.svm.core.SubstrateUtil.mangleName;
-import static com.oracle.svm.core.util.VMError.shouldNotReachHere;
+import static com.oracle.svm.shared.util.SubstrateUtil.mangleName;
+import static com.oracle.svm.shared.util.VMError.shouldNotReachHere;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintWriter;
@@ -47,6 +47,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import com.oracle.svm.core.BuilderUtil;
 import org.graalvm.collections.EconomicSet;
 import org.graalvm.collections.Pair;
 import org.graalvm.nativeimage.ImageSingletons;
@@ -76,12 +77,11 @@ import com.oracle.svm.core.InvalidMethodPointerHandler;
 import com.oracle.svm.core.Isolates;
 import com.oracle.svm.core.OS;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.c.CGlobalDataImpl;
 import com.oracle.svm.core.c.function.GraalIsolateHeader;
 import com.oracle.svm.core.c.libc.TemporaryBuildDirectoryProvider;
 import com.oracle.svm.core.config.ConfigurationValues;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.code.CGlobalDataBasePointer;
 import com.oracle.svm.core.graal.code.CGlobalDataInfo;
@@ -96,15 +96,10 @@ import com.oracle.svm.core.jni.access.JNIAccessibleMethod;
 import com.oracle.svm.core.meta.MethodOffset;
 import com.oracle.svm.core.meta.MethodPointer;
 import com.oracle.svm.core.meta.MethodRef;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.os.ImageHeapProvider;
 import com.oracle.svm.core.reflect.SubstrateAccessor;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.core.util.ByteFormattingUtil;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.DeadlockWatchdog;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.NativeImageOptions;
@@ -124,9 +119,14 @@ import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.meta.HostedUniverse;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.ReflectionUtil.ReflectionUtilError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.AnnotationUtil;
-import com.oracle.svm.util.ReflectionUtil;
-import com.oracle.svm.util.ReflectionUtil.ReflectionUtilError;
 
 import jdk.graal.compiler.asm.aarch64.AArch64Assembler;
 import jdk.graal.compiler.code.CompilationResult;
@@ -167,7 +167,7 @@ public abstract class NativeImage extends AbstractImage {
 
         int pageSize = SubstrateOptions.getPageSize();
         objectFile = ObjectFileFactory.singleton().newObjectFile(pageSize, ImageSingletons.lookup(TemporaryBuildDirectoryProvider.class).getTemporaryBuildDirectory(), universe.getBigBang());
-        objectFile.setByteOrder(ConfigurationValues.getTarget().arch.getByteOrder());
+        objectFile.setByteOrder(ConfigurationValues.getByteOrder());
         wordSize = FrameAccess.wordSize();
         assert objectFile.getWordSizeInBytes() == wordSize;
         assert objectFile.getPageSize() == heapLayout.getPageSize();
@@ -603,7 +603,7 @@ public abstract class NativeImage extends AbstractImage {
     }
 
     private static boolean checkCodeRelocationKind(Info info) {
-        int wordSize = ConfigurationValues.getTarget().arch.getWordSize();
+        int wordSize = ConfigurationValues.getWordSize();
         int relocationSize = info.getRelocationSize();
         RelocationKind relocationKind = info.getRelocationKind();
 
@@ -806,7 +806,7 @@ public abstract class NativeImage extends AbstractImage {
                 name = hMethod.getUniqueShortName();
             }
         } else {
-            name = SubstrateUtil.uniqueShortName(sm);
+            name = BuilderUtil.uniqueShortName(sm);
         }
 
         return name;
@@ -838,7 +838,7 @@ public abstract class NativeImage extends AbstractImage {
      *         does)
      */
     public static String globalSymbolNameForMethod(java.lang.reflect.Method m) {
-        return mangleName(SubstrateUtil.uniqueShortName(m));
+        return mangleName(BuilderUtil.uniqueShortName(m));
     }
 
     /**
@@ -1035,6 +1035,7 @@ final class MethodPointerInvalidHandlerFeature implements InternalFeature {
             access.registerAsRoot(invalidCodeAddressHandler, true, "Registered in " + MethodPointerInvalidHandlerFeature.class);
         }
         access.registerAsRoot(InvalidMethodPointerHandler.METHOD_POINTER_NOT_COMPILED_HANDLER_METHOD, true, "Registered in " + MethodPointerInvalidHandlerFeature.class);
+        access.registerAsRoot(InvalidMethodPointerHandler.INVALID_VTABLE_ENTRY_HANDLER_METHOD, true, "Registered in " + MethodPointerInvalidHandlerFeature.class);
     }
 
     static Method getInvalidCodeAddressHandler() {

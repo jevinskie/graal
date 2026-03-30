@@ -28,7 +28,18 @@ suite = {
       {
         "name" : "sdk",
         "subdir": True
-      }
+      },
+      # dynamic import for the 'barista' bench suite
+      {
+        "name": "barista",
+        "subdir": False,
+        "version": "0.6.5",
+        "foreign": True, # barista is not an mx suite
+        "dynamic": True,
+        "urls": [
+          {"url": "https://github.com/barista-benchmarks/barista.git", "kind" : "git"},
+        ],
+      },
     ]
   },
 
@@ -128,10 +139,27 @@ suite = {
 
     # ------------- Graal -------------
 
+    "jdk.graal.compiler.options" : {
+      "subDir" : "src",
+      "sourceDirs" : ["src"],
+      "dependencies" : [
+        "sdk:COLLECTIONS",
+      ],
+      "uses" : [
+        "jdk.graal.compiler.options.OptionDescriptors",
+        "jdk.graal.compiler.options.LibGraalSupport",
+      ],
+      "checkPackagePrefix": "false",
+      "checkstyle" : "jdk.graal.compiler",
+      "javaCompliance" : "21+",
+      "jacoco" : "include",
+    },
+
     "jdk.graal.compiler" : {
       "subDir" : "src",
       "sourceDirs" : ["src"],
       "dependencies" : [
+        "GRAAL_OPTIONS",
         "sdk:WORD",
         "sdk:COLLECTIONS",
         "truffle:TRUFFLE_COMPILER",
@@ -347,6 +375,7 @@ suite = {
       "subDir": "src",
       "sourceDirs": ["src"],
       "dependencies": [
+        "sdk:VMACCESS_GUEST",
         "jdk.graal.compiler.vmaccess",
       ],
       "requires": [
@@ -357,6 +386,7 @@ suite = {
           "jdk.internal.access",
           "jdk.internal.loader",
           "jdk.internal.module",
+          "jdk.internal.misc",
         ],
         "jdk.internal.vm.ci": [
           "jdk.vm.ci.meta",
@@ -481,6 +511,7 @@ suite = {
       "forceJavac": True,
       "checkstyle" : "jdk.graal.compiler",
       "dependencies" : [
+        "GRAAL_OPTIONS",
         "GRAAL",
         "GRAAL_MANAGEMENT",
         "sdk:NATIVEIMAGE_LIBGRAAL",
@@ -594,6 +625,28 @@ suite = {
       "maven": False,
     },
 
+    "GRAAL_OPTIONS" : {
+      # This distribution defines a module.
+      "moduleInfo" : {
+        "name" : "jdk.graal.compiler.options",
+        "exports" : [
+            "jdk.graal.compiler.options"
+        ],
+      },
+      "subDir" : "src",
+      "dependencies" : [
+        "jdk.graal.compiler.options",
+      ],
+      "distDependencies" : [
+        "sdk:COLLECTIONS",
+      ],
+      "description": "The Graal compiler options framework.",
+      "maven" : {
+        "artifactId" : "options",
+        "tag": ["default", "public"],
+      },
+    },
+
     "GRAAL" : {
       # This distribution defines a module.
       "moduleInfo" : {
@@ -620,22 +673,22 @@ suite = {
           "jdk.graal.compiler.core.common            to org.graalvm.nativeimage.agent.tracing,org.graalvm.nativeimage.objectfile",
           "jdk.graal.compiler.debug                  to org.graalvm.nativeimage.objectfile",
           "jdk.graal.compiler.nodes.graphbuilderconf to org.graalvm.nativeimage.driver,org.graalvm.nativeimage.librarysupport",
-          "jdk.graal.compiler.options                to org.graalvm.nativeimage.driver,org.graalvm.nativeimage.junitsupport",
           "jdk.graal.compiler.phases.common          to org.graalvm.nativeimage.agent.tracing,org.graalvm.nativeimage.configure",
           "jdk.graal.compiler.serviceprovider        to org.graalvm.nativeimage.driver,org.graalvm.nativeimage.agent.jvmtibase,org.graalvm.nativeimage.agent.diagnostics,org.graalvm.nativeimage.objectfile",
           "jdk.graal.compiler.util.json              to org.graalvm.nativeimage.librarysupport,org.graalvm.nativeimage.agent.tracing,org.graalvm.nativeimage.configure,org.graalvm.nativeimage.driver",
         ],
+        "requires": [
+          "transitive jdk.graal.compiler.options"
+        ],
         "uses" : [
           "jdk.graal.compiler.code.DisassemblerProvider",
           "jdk.graal.compiler.core.match.MatchStatementSet",
-          "jdk.graal.compiler.core.common.LibGraalSupport",
           "jdk.graal.compiler.debug.DebugDumpHandlersFactory",
           "jdk.graal.compiler.debug.TTYStreamProvider",
           "jdk.graal.compiler.debug.PathUtilitiesProvider",
           "jdk.graal.compiler.hotspot.HotSpotBackendFactory",
           "jdk.graal.compiler.hotspot.meta.HotSpotInvocationPluginProvider",
           "jdk.graal.compiler.nodes.graphbuilderconf.GeneratedPluginFactory",
-          "jdk.graal.compiler.options.OptionDescriptors",
           "jdk.graal.compiler.serviceprovider.JMXService",
           "jdk.graal.compiler.truffle.hotspot.TruffleCallBoundaryInstrumentationFactory",
           "jdk.graal.compiler.truffle.substitutions.GraphBuilderInvocationPluginProvider",
@@ -647,6 +700,7 @@ suite = {
         "GRAAL_VERSION",
       ],
       "distDependencies" : [
+        "GRAAL_OPTIONS",
         "sdk:COLLECTIONS",
         "sdk:WORD",
         "truffle:TRUFFLE_COMPILER",
@@ -736,6 +790,7 @@ suite = {
             "jdk.internal.access",
             "jdk.internal.loader",
             "jdk.internal.module",
+            "jdk.internal.misc"
           ],
           "jdk.internal.vm.ci": [
             "jdk.vm.ci.meta",
@@ -755,6 +810,7 @@ suite = {
         "jdk.graal.compiler.hostvmaccess",
       ],
       "distDependencies": [
+        "sdk:VMACCESS_GUEST",
         "VMACCESS",
       ],
       "useModulePath": True,

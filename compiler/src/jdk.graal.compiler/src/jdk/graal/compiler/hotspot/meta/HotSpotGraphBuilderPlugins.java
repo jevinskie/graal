@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,8 +26,6 @@ package jdk.graal.compiler.hotspot.meta;
 
 import static jdk.graal.compiler.hotspot.HotSpotBackend.ARRAY_PARTITION;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.ARRAY_SORT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.BASE64_DECODE_BLOCK;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.BASE64_ENCODE_BLOCK;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.CHACHA20Block;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.CRC_TABLE_LOCATION;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.DILITHIUM_ALMOST_INVERSE_NTT;
@@ -87,7 +85,6 @@ import org.graalvm.word.LocationIdentity;
 import jdk.graal.compiler.annotation.AnnotationValueSupport;
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
-import jdk.graal.compiler.core.common.LibGraalSupport;
 import jdk.graal.compiler.core.common.calc.Condition;
 import jdk.graal.compiler.core.common.memory.BarrierType;
 import jdk.graal.compiler.core.common.memory.MemoryOrderMode;
@@ -181,6 +178,7 @@ import jdk.graal.compiler.nodes.memory.WriteNode;
 import jdk.graal.compiler.nodes.memory.address.AddressNode;
 import jdk.graal.compiler.nodes.memory.address.OffsetAddressNode;
 import jdk.graal.compiler.nodes.util.GraphUtil;
+import jdk.graal.compiler.options.LibGraalSupport;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionType;
@@ -279,7 +277,7 @@ public class HotSpotGraphBuilderPlugins {
 
             @Override
             public void run() {
-                StandardGraphBuilderPlugins.registerInvocationPlugins(snippetReflection, invocationPlugins, true, false, true);
+                StandardGraphBuilderPlugins.registerInvocationPlugins(snippetReflection, invocationPlugins, true, false, true, true);
 
                 registerObjectPlugins(invocationPlugins, config);
                 registerClassPlugins(plugins, config);
@@ -297,7 +295,6 @@ public class HotSpotGraphBuilderPlugins {
                 registerBigIntegerPlugins(invocationPlugins, config);
                 registerSHAPlugins(invocationPlugins, config);
                 registerMLPlugins(invocationPlugins, config);
-                registerBase64Plugins(invocationPlugins, config, metaAccess);
                 registerUnsafePlugins(invocationPlugins, config);
                 registerArrayPlugins(invocationPlugins, config);
                 registerStringPlugins(invocationPlugins, wordTypes, foreignCalls, config);
@@ -1542,52 +1539,6 @@ public class HotSpotGraphBuilderPlugins {
             @Override
             public boolean isApplicable(Architecture arch) {
                 return config.stubKyberBarrettReduce != 0L;
-            }
-        });
-    }
-
-    private static void registerBase64Plugins(InvocationPlugins plugins, GraalHotSpotVMConfig config, MetaAccessProvider metaAccess) {
-        Registration r = new Registration(plugins, "java.util.Base64$Encoder");
-        r.register(new ConditionalInvocationPlugin("encodeBlock", Receiver.class, byte[].class, int.class, int.class, byte[].class, int.class, boolean.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode src,
-                            ValueNode sp, ValueNode sl, ValueNode dst, ValueNode dp, ValueNode isURL) {
-                if (receiver != null) {
-                    // Side effect of call below is to add a receiver null check if required
-                    receiver.get(true);
-                }
-                int byteArrayBaseOffset = metaAccess.getArrayBaseOffset(JavaKind.Byte);
-                ComputeObjectAddressNode srcAddress = b.add(new ComputeObjectAddressNode(src, ConstantNode.forInt(byteArrayBaseOffset)));
-                ComputeObjectAddressNode dstAddress = b.add(new ComputeObjectAddressNode(dst, ConstantNode.forInt(byteArrayBaseOffset)));
-                b.add(new ForeignCallNode(BASE64_ENCODE_BLOCK, srcAddress, sp, sl, dstAddress, dp, isURL));
-                return true;
-            }
-
-            @Override
-            public boolean isApplicable(Architecture arch) {
-                return config.base64EncodeBlock != 0L;
-            }
-        });
-        r = new Registration(plugins, "java.util.Base64$Decoder");
-        r.register(new ConditionalInvocationPlugin("decodeBlock", Receiver.class, byte[].class, int.class, int.class, byte[].class, int.class, boolean.class, boolean.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode src,
-                            ValueNode sp, ValueNode sl, ValueNode dst, ValueNode dp, ValueNode isURL, ValueNode isMime) {
-                if (receiver != null) {
-                    // Side effect of call below is to add a receiver null check if required
-                    receiver.get(true);
-                }
-                int byteArrayBaseOffset = metaAccess.getArrayBaseOffset(JavaKind.Byte);
-                ComputeObjectAddressNode srcAddress = b.add(new ComputeObjectAddressNode(src, ConstantNode.forInt(byteArrayBaseOffset)));
-                ComputeObjectAddressNode dstAddress = b.add(new ComputeObjectAddressNode(dst, ConstantNode.forInt(byteArrayBaseOffset)));
-                ForeignCallNode call = new ForeignCallNode(BASE64_DECODE_BLOCK, srcAddress, sp, sl, dstAddress, dp, isURL, isMime);
-                b.addPush(JavaKind.Int, call);
-                return true;
-            }
-
-            @Override
-            public boolean isApplicable(Architecture arch) {
-                return config.base64DecodeBlock != 0L;
             }
         });
     }

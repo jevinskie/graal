@@ -25,8 +25,8 @@
 
 package com.oracle.svm.core.jdk.localization;
 
-import static com.oracle.svm.util.StringUtil.toDotSeparated;
-import static com.oracle.svm.util.StringUtil.toSlashSeparated;
+import static com.oracle.svm.shared.util.StringUtil.toDotSeparated;
+import static com.oracle.svm.shared.util.StringUtil.toSlashSeparated;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -53,15 +53,19 @@ import org.graalvm.nativeimage.impl.RuntimeReflectionSupport;
 import org.graalvm.nativeimage.impl.RuntimeResourceSupport;
 
 import com.oracle.svm.core.ClassLoaderSupport;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.configure.RuntimeDynamicAccessMetadata;
 import com.oracle.svm.core.jdk.Resources;
 import com.oracle.svm.core.metadata.MetadataTracer;
 import com.oracle.svm.core.util.ImageHeapMap;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.StringUtil;
+import com.oracle.svm.shared.util.VMError;
 
-import jdk.graal.compiler.debug.GraalError;
 import sun.util.locale.provider.LocaleProviderAdapter;
 import sun.util.locale.provider.ResourceBundleBasedAdapter;
 import sun.util.resources.Bundles;
@@ -72,6 +76,7 @@ import sun.util.resources.Bundles;
  *
  * For more details, see LocalizationFeature
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Duplicable.class, other = PartiallyLayerAware.class)
 public class LocalizationSupport {
 
     public final Map<String, Charset> charsets = new HashMap<>();
@@ -94,21 +99,8 @@ public class LocalizationSupport {
         this.supportedLanguageTags = getLanguageTags(locales);
     }
 
-    public boolean optimizedMode() {
-        return false;
-    }
-
-    public boolean jvmMode() {
-        return !optimizedMode();
-    }
-
     public boolean substituteLoadLookup() {
         return false;
-    }
-
-    public OptimizedLocalizationSupport asOptimizedSupport() {
-        GraalError.guarantee(optimizedMode(), "Optimized support only available in optimized localization mode.");
-        return ((OptimizedLocalizationSupport) this);
     }
 
     public Map<String, Object> getBundleContentOf(Object bundle) {
@@ -138,7 +130,7 @@ public class LocalizationSupport {
 
         /* Property-based bundle lookup happens only if class-based lookup fails */
         if (bundle instanceof PropertyResourceBundle) {
-            String[] bundleNameWithModule = SubstrateUtil.split(bundleName, ":", 2);
+            String[] bundleNameWithModule = StringUtil.split(bundleName, ":", 2);
             String resourceName;
             String origin = "Added for PropertyResourceBundle: " + bundleName;
             if (bundleNameWithModule.length < 2) {

@@ -34,6 +34,7 @@ import java.lang.reflect.RecordComponent;
 import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.svm.core.BuildPhaseProvider;
+import com.oracle.svm.core.configure.RuntimeDynamicAccessMetadata;
 import com.oracle.svm.core.heap.UnknownPrimitiveField;
 import com.oracle.svm.core.reflect.RuntimeMetadataDecoder;
 
@@ -56,13 +57,22 @@ public final class ImageReflectionMetadata implements ReflectionMetadata {
     final int recordComponentsEncodingIndex;
 
     @UnknownPrimitiveField(availability = BuildPhaseProvider.CompileQueueFinished.class)//
+    final int dynamicAccessIndex;
+
+    @UnknownPrimitiveField(availability = BuildPhaseProvider.CompileQueueFinished.class)//
+    final int unsafeAllocatedIndex;
+
+    @UnknownPrimitiveField(availability = BuildPhaseProvider.CompileQueueFinished.class)//
     final int classFlags;
 
-    ImageReflectionMetadata(int fieldsEncodingIndex, int methodsEncodingIndex, int constructorsEncodingIndex, int recordComponentsEncodingIndex, int classFlags) {
+    ImageReflectionMetadata(int fieldsEncodingIndex, int methodsEncodingIndex, int constructorsEncodingIndex, int recordComponentsEncodingIndex, int dynamicAccessIndex, int unsafeAllocatedIndex,
+                    int classFlags) {
         this.fieldsEncodingIndex = fieldsEncodingIndex;
         this.methodsEncodingIndex = methodsEncodingIndex;
         this.constructorsEncodingIndex = constructorsEncodingIndex;
         this.recordComponentsEncodingIndex = recordComponentsEncodingIndex;
+        this.dynamicAccessIndex = dynamicAccessIndex;
+        this.unsafeAllocatedIndex = unsafeAllocatedIndex;
         this.classFlags = classFlags;
     }
 
@@ -102,5 +112,21 @@ public final class ImageReflectionMetadata implements ReflectionMetadata {
             throw DynamicHub.recordsNotAvailable(declaringClass);
         }
         return ImageSingletons.lookup(RuntimeMetadataDecoder.class).parseRecordComponents(declaringClass, recordComponentsEncodingIndex, layerNum);
+    }
+
+    @Override
+    public RuntimeDynamicAccessMetadata getDynamicAccessMetadata(DynamicHub dynamicHub, int layerNum) {
+        if (dynamicAccessIndex == NO_DATA) {
+            return null;
+        }
+        return ImageSingletons.lookup(RuntimeMetadataDecoder.class).parseDynamicAccessMetadata(dynamicAccessIndex, layerNum);
+    }
+
+    @Override
+    public RuntimeDynamicAccessMetadata getUnsafeAllocationMetadata(DynamicHub dynamicHub, int layerNum) {
+        if (unsafeAllocatedIndex == NO_DATA) {
+            return null;
+        }
+        return ImageSingletons.lookup(RuntimeMetadataDecoder.class).parseDynamicAccessMetadata(unsafeAllocatedIndex, layerNum);
     }
 }

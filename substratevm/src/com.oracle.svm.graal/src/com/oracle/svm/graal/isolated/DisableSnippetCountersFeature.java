@@ -26,9 +26,12 @@ package com.oracle.svm.graal.isolated;
 
 import com.oracle.svm.core.ParsingReason;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.option.HostedOptionValues;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
 import jdk.graal.compiler.core.common.GraalOptions;
@@ -77,10 +80,11 @@ final class DisableSnippetCountersPlugin implements NodePlugin {
  * In general snippets counters should only enabled if the flag SnippetCounters is set.
  */
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 final class DisableSnippetCountersFeature implements InternalFeature {
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
-        return SubstrateOptions.supportCompileInIsolates() || !GraalOptions.SnippetCounters.getValue(HostedOptionValues.singleton());
+        return SubstrateOptions.supportCompileInIsolates() || !GraalOptions.SnippetCounters.getValue(HostedOptionValues.singleton().get());
     }
 
     @Override

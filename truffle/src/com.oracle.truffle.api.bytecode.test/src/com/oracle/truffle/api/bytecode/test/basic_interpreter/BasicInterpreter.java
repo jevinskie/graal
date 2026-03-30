@@ -58,9 +58,11 @@ import com.oracle.truffle.api.bytecode.BytecodeFrame;
 import com.oracle.truffle.api.bytecode.BytecodeLocation;
 import com.oracle.truffle.api.bytecode.BytecodeNode;
 import com.oracle.truffle.api.bytecode.BytecodeRootNode;
+import com.oracle.truffle.api.bytecode.BytecodeTier;
 import com.oracle.truffle.api.bytecode.ConstantOperand;
 import com.oracle.truffle.api.bytecode.ContinuationResult;
 import com.oracle.truffle.api.bytecode.ContinuationRootNode;
+import com.oracle.truffle.api.bytecode.ForceQuickening;
 import com.oracle.truffle.api.bytecode.GenerateBytecode;
 import com.oracle.truffle.api.bytecode.GenerateBytecodeTestVariants;
 import com.oracle.truffle.api.bytecode.GenerateBytecodeTestVariants.Variant;
@@ -196,7 +198,19 @@ import com.oracle.truffle.api.source.SourceSection;
                                 defaultUncachedThreshold = "defaultUncachedThreshold", //
                                 enableSpecializationIntrospection = true, //
                                 boxingEliminationTypes = {boolean.class, long.class}, //
-                                variadicStackLimit = "16"))
+                                variadicStackLimit = "16")),
+                @Variant(suffix = "ProductionRootScopingTailCall", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
+                                enableYield = true, //
+                                enableMaterializedLocalAccesses = true, //
+                                enableSerialization = true, //
+                                enableBlockScoping = false, //
+                                enableTagInstrumentation = true, //
+                                enableUncachedInterpreter = true, //
+                                defaultUncachedThreshold = "defaultUncachedThreshold", //
+                                enableSpecializationIntrospection = true, //
+                                boxingEliminationTypes = {boolean.class, long.class}, //
+                                enableTailCallHandlers = true, variadicStackLimit = "16"))
 })
 @ShortCircuitOperation(booleanConverter = BasicInterpreter.ToBoolean.class, name = "ScAnd", operator = Operator.AND_RETURN_VALUE)
 @ShortCircuitOperation(booleanConverter = BasicInterpreter.ToBoolean.class, name = "ScOr", operator = Operator.OR_RETURN_VALUE, javadoc = "ScOr returns the first truthy operand value.")
@@ -217,6 +231,11 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
     public void setName(String name) {
         this.name = name;
+    }
+
+    public Throwable interceptInternalException(Throwable t, VirtualFrame frame, BytecodeNode bytecodeNode, int bytecodeIndex) {
+        t.addSuppressed(new AssertionError("Attached Bytecode dump: " + bytecodeNode.dump(bytecodeIndex)));
+        return t;
     }
 
     @Override
@@ -275,7 +294,15 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
     @Operation(javadoc = "Adds the two operand values, which must either be longs or Strings.")
     static final class Add {
+
         @Specialization
+        @ForceQuickening("add")
+        public static long addInts(int lhs, int rhs) {
+            return lhs + rhs;
+        }
+
+        @Specialization
+        @ForceQuickening("add")
         public static long addLongs(long lhs, long rhs) {
             return lhs + rhs;
         }
@@ -633,8 +660,10 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         public static SourceSection doOperation(VirtualFrame frame, boolean ensure,
                         @Bind Node node,
                         @Bind BytecodeNode bytecode) {
-            // Put this branch in the operation itself so that the bytecode branch profile doesn't
-            // mark this path unreached during compilation.
+            /*
+             * Put this branch in the operation itself so that the bytecode branch profile doesn't
+             * mark this path unreached during compilation.
+             */
             if (ensure) {
                 return bytecode.ensureSourceInformation().getSourceLocation(frame, node);
             } else {
@@ -840,6 +869,17 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
+    // Special operation that forces its operand to escape.
+    @Operation
+    public static final class Deoptimize {
+        @Specialization
+        public static void deoptimize(boolean condition) {
+            if (condition) {
+                CompilerDirectives.transferToInterpreter();
+            }
+        }
+    }
+
     @Instrumentation
     public static final class PrintHere {
         @Specialization
@@ -930,6 +970,14 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
+    @Operation
+    static final class Greater {
+        @Specialization
+        static boolean doLongs(long left, long right) {
+            return left > right;
+        }
+    }
+
     @Operation(storeBytecodeIndex = false)
     public static final class EnableDoubleValueInstrumentation {
         @Specialization
@@ -946,6 +994,14 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
             return configBuilder.build();
         }
 
+    }
+
+    @Operation(storeBytecodeIndex = false)
+    public static final class IsUncached {
+        @Specialization
+        public static boolean perform(@Bind BytecodeTier tier) {
+            return tier == BytecodeTier.UNCACHED;
+        }
     }
 
     record Bindings(

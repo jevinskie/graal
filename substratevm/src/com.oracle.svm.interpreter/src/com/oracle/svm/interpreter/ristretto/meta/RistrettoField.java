@@ -31,6 +31,7 @@ import com.oracle.svm.graal.meta.SubstrateType;
 import com.oracle.svm.interpreter.metadata.CremaResolvedObjectType;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaField;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaType;
+import com.oracle.svm.interpreter.ristretto.RistrettoUtils;
 
 import jdk.graal.compiler.debug.GraalError;
 import jdk.vm.ci.meta.JavaKind;
@@ -52,10 +53,20 @@ public final class RistrettoField extends SubstrateField {
         this.interpreterField = interpreterField;
     }
 
+    private RistrettoField(InterpreterResolvedJavaField interpreterField, SubstrateField aotField) {
+        super(aotField.getName(), aotField.getModifiers(), aotField.hashCode(), aotField.getLocation());
+        this.interpreterField = interpreterField;
+    }
+
     private static final Function<InterpreterResolvedJavaField, ResolvedJavaField> RISTRETTO_FIELD_FUNCTION = RistrettoField::new;
 
-    public static RistrettoField create(InterpreterResolvedJavaField interpreterField) {
+    public static RistrettoField getOrCreate(InterpreterResolvedJavaField interpreterField) {
         return (RistrettoField) interpreterField.getRistrettoField(RISTRETTO_FIELD_FUNCTION);
+    }
+
+    public static RistrettoField getOrCreate(InterpreterResolvedJavaField interpreterField, SubstrateField aotField) {
+        GraalError.guarantee(!RistrettoUtils.isRuntimeLoaded(aotField.getDeclaringClass()), "Must be in the image already");
+        return (RistrettoField) interpreterField.getRistrettoField(interpreterResolvedJavaField -> new RistrettoField(interpreterResolvedJavaField, aotField));
     }
 
     public InterpreterResolvedJavaField getInterpreterField() {
@@ -95,7 +106,7 @@ public final class RistrettoField extends SubstrateField {
     public JavaType getType() {
         JavaType fieldType = interpreterField.getType();
         if (fieldType instanceof InterpreterResolvedJavaType iType) {
-            return RistrettoType.create(iType);
+            return RistrettoType.getOrCreate(iType);
         }
         if (fieldType instanceof UnresolvedJavaType unresolvedJavaType) {
             throw GraalError.shouldNotReachHere("Cannot have unresolved fields for resolved types " + getDeclaringClass() + " -> " + unresolvedJavaType);
@@ -126,7 +137,7 @@ public final class RistrettoField extends SubstrateField {
 
     @Override
     public SubstrateType getDeclaringClass() {
-        return RistrettoType.create(interpreterField.getDeclaringClass());
+        return RistrettoType.getOrCreate(interpreterField.getDeclaringClass());
     }
 
     @Override

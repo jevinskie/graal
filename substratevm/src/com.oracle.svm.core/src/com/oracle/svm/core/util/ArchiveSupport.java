@@ -50,7 +50,8 @@ import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 import java.util.stream.Stream;
 
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.VMError;
 
 public class ArchiveSupport {
 

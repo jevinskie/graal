@@ -34,26 +34,48 @@ import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.vm.ci.common.JVMCIError;
 import jdk.vm.ci.meta.JavaConstant;
+import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
+/**
+ * External-JVMCI {@link SnippetReflectionProvider} implementation backed by Espresso interop
+ * helpers.
+ */
 final class EspressoExternalSnippetReflectionProvider implements SnippetReflectionProvider {
     private final EspressoExternalVMAccess access;
-    private final Value byteArrayClass;
-    private final Value stringClass;
 
-    EspressoExternalSnippetReflectionProvider(EspressoExternalVMAccess access, EspressoExternalMetaAccessProvider metaAccess, EspressoExternalConstantReflectionProvider constantReflection) {
+    EspressoExternalSnippetReflectionProvider(EspressoExternalVMAccess access) {
         this.access = access;
-        byteArrayClass = constantReflection.asJavaClass(metaAccess.lookupJavaType(byte[].class)).getValue();
-        stringClass = constantReflection.asJavaClass(metaAccess.lookupJavaType(String.class)).getValue();
     }
 
+    /**
+     * Converts host objects to guest constants.
+     * <p>
+     * External JVMCI currently supports only primitive host arrays on this path. Non-array objects
+     * are intentionally rejected.
+     */
     @Override
     public JavaConstant forObject(Object object) {
-        throw JVMCIError.shouldNotReachHere("Cannot create JavaConstant for external JVMCI");
+        if (object == null) {
+            return JavaConstant.NULL_POINTER;
+        }
+        Class<?> clazz = object.getClass();
+        if (clazz.isArray() && clazz.getComponentType().isPrimitive()) {
+            JavaKind componentKind = JavaKind.fromJavaClass(clazz.getComponentType());
+            Value guestArray = access.invokeJVMCIHelper("toGuestPrimitiveArray", (int) componentKind.getTypeChar(), object);
+            return new EspressoExternalObjectConstant(access, guestArray);
+        }
+        throw JVMCIError.shouldNotReachHere("Cannot create JavaConstant for external JVMCI: " + clazz + ". Only primitive arrays are supported.");
     }
 
+    /**
+     * Converts selected guest constants to host objects.
+     * <p>
+     * This conversion is intentionally narrow: strings and byte arrays are supported for
+     * compatibility, while arbitrary guest objects are rejected.
+     */
     @Override
     @SuppressWarnings("unchecked")
     public <T> T asObject(Class<T> type, JavaConstant constant) {
@@ -65,13 +87,13 @@ final class EspressoExternalSnippetReflectionProvider implements SnippetReflecti
         }
         Value value = objConstant.getValue();
         Value metaObject = value.getMetaObject();
-        if (stringClass.equals(metaObject)) {
+        if (access.java_lang_String_class.equals(metaObject)) {
             if (!type.isAssignableFrom(String.class)) {
                 return null;
             }
             return (T) value.asString();
         }
-        if (byteArrayClass.equals(metaObject)) {
+        if (access.byte_array_class.equals(metaObject)) {
             if (!type.isAssignableFrom(byte[].class)) {
                 return null;
             }
@@ -99,18 +121,18 @@ final class EspressoExternalSnippetReflectionProvider implements SnippetReflecti
     @Override
     public Class<?> originalClass(ResolvedJavaType type) {
         Objects.requireNonNull(type);
-        throw JVMCIError.shouldNotReachHere("Cannot extract class for external JVMCI");
+        throw JVMCIError.shouldNotReachHere("Cannot extract class for external JVMCI (" + type + ")");
     }
 
     @Override
     public Executable originalMethod(ResolvedJavaMethod method) {
         Objects.requireNonNull(method);
-        throw JVMCIError.shouldNotReachHere("Cannot extract method for external JVMCI");
+        throw JVMCIError.shouldNotReachHere("Cannot extract method for external JVMCI (" + method + ")");
     }
 
     @Override
     public Field originalField(ResolvedJavaField field) {
         Objects.requireNonNull(field);
-        throw JVMCIError.shouldNotReachHere("Cannot extract field for external JVMCI");
+        throw JVMCIError.shouldNotReachHere("Cannot extract field for external JVMCI (" + field + ")");
     }
 }

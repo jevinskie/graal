@@ -34,7 +34,7 @@ suite = {
                 "name": "graal-nodejs",
                 "subdir": True,
                 "dynamic": True,
-                "version": "c40b7076eacf991da98a42007cc85bb40ec1e37c",
+                "version": "be749578100a7513e1533123bb586708727fd9a2",
                 "urls" : [
                     {"url" : "https://github.com/graalvm/graaljs.git", "kind" : "git"},
                 ]
@@ -43,7 +43,7 @@ suite = {
                 "name": "graal-js",
                 "subdir": True,
                 "dynamic": True,
-                "version": "c40b7076eacf991da98a42007cc85bb40ec1e37c",
+                "version": "be749578100a7513e1533123bb586708727fd9a2",
                 "urls": [
                     {"url": "https://github.com/graalvm/graaljs.git", "kind" : "git"},
                 ]
@@ -58,7 +58,7 @@ suite = {
             },
             {
                 "name": "graalpython",
-                "version": "edb2e643147ede693fd58b958044a2ee7b2c6f6d",
+                "version": "f5f7e67823a699213ab06c86440da94ead672467",
                 "dynamic": True,
                 "urls": [
                     {"url": "https://github.com/graalvm/graalpython.git", "kind": "git"},
@@ -71,6 +71,17 @@ suite = {
                 "urls": [
                     {"url": "https://github.com/graalvm/polybenchmarks.git", "kind": "git"},
                 ]
+            },
+            # dynamic import for the 'barista' bench suite
+            {
+                "name": "barista",
+                "subdir": False,
+                "version": "0.6.5",
+                "foreign": True, # barista is not an mx suite
+                "dynamic": True,
+                "urls": [
+                    {"url": "https://github.com/barista-benchmarks/barista.git", "kind" : "git"},
+                ],
             },
         ]
     },

@@ -64,8 +64,6 @@ import com.google.javascript.jscomp.VariableRenamingPolicy;
 import com.google.javascript.rhino.StaticSourceFile;
 import com.oracle.graal.pointsto.util.Timer;
 import com.oracle.graal.pointsto.util.TimerCollection;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.DeadlockWatchdog;
 import com.oracle.svm.hosted.NativeImageGenerator;
 import com.oracle.svm.hosted.webimage.codegen.ClosureCompilerSupport;
@@ -73,6 +71,8 @@ import com.oracle.svm.hosted.webimage.codegen.JSCodeGenTool;
 import com.oracle.svm.hosted.webimage.codegen.WebImageEntryFunctionLowerer;
 import com.oracle.svm.hosted.webimage.codegen.WebImageProviders;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.util.VMError;
 
 /**
  * Encapsulation for the optional Google Closure Compiler.
@@ -372,7 +372,7 @@ public class ClosureCompilerSupportImpl implements ClosureCompilerSupport {
     protected CompilerOptions createClosureCompilerOptions() {
         final CompilerOptions closureCompOpts = new CompilerOptions();
 
-        WebImageOptions.ClosurePrettyPrintLevel prettyPrintLevel = WebImageOptions.ClosurePrettyPrint.getValue(HostedOptionValues.singleton());
+        WebImageOptions.ClosurePrettyPrintLevel prettyPrintLevel = WebImageOptions.ClosurePrettyPrint.getValue(HostedOptionValues.singleton().get());
 
         CompilationLevel.ADVANCED_OPTIMIZATIONS.setOptionsForCompilationLevel(closureCompOpts);
 

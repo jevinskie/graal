@@ -24,8 +24,8 @@
  */
 package com.oracle.svm.core.thread;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static com.oracle.svm.core.heap.RestrictHeapAccess.Access.NO_ALLOCATION;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import java.io.Serial;
 
@@ -34,16 +34,15 @@ import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.Threading.RecurringCallback;
 import org.graalvm.nativeimage.Threading.RecurringCallbackAccess;
 
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.jfr.sampler.JfrRecurringCallbackExecutionSampler;
-import com.oracle.svm.core.option.HostedOptionKey;
 import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
 import com.oracle.svm.core.threadlocal.FastThreadLocalInt;
 import com.oracle.svm.core.threadlocal.FastThreadLocalObject;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.util.VMError;
 
-import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.options.Option;
 
 /**
@@ -74,7 +73,7 @@ public class RecurringCallbackSupport {
     private static final FastThreadLocalObject<RecurringCallbackTimer> timerTL = FastThreadLocalFactory.createObject(RecurringCallbackTimer.class, "RecurringCallbackSupport.timer");
     private static final FastThreadLocalInt suspendedTL = FastThreadLocalFactory.createInt("RecurringCallbackSupport.suspended");
 
-    @Fold
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static boolean isEnabled() {
         return ConcealedOptions.SupportRecurringCallback.getValue() || JfrRecurringCallbackExecutionSampler.isPresent();
     }
@@ -90,12 +89,9 @@ public class RecurringCallbackSupport {
         return new RecurringCallbackTimer();
     }
 
-    @Uninterruptible(reason = "Prevent VM operations that modify the recurring callbacks.")
-    public static void installCallback(IsolateThread thread, RecurringCallbackTimer timer, boolean overwriteExisting) {
-        if (overwriteExisting) {
-            uninstallCallback(thread);
-        }
-        installCallback(thread, timer);
+    public static void installCallback(long intervalNanos, RecurringCallback callback) {
+        RecurringCallbackTimer timer = createCallbackTimer(intervalNanos, callback);
+        installCallback(CurrentIsolate.getCurrentThread(), timer);
     }
 
     @Uninterruptible(reason = "Prevent VM operations that modify the recurring callbacks.")
@@ -108,6 +104,11 @@ public class RecurringCallbackSupport {
 
         timerTL.set(thread, timer);
         SafepointCheckCounter.setVolatile(thread, timer.requestedChecks);
+    }
+
+    @Uninterruptible(reason = "Prevent VM operations that modify the recurring callbacks.")
+    public static void uninstallCallback() {
+        uninstallCallback(CurrentIsolate.getCurrentThread());
     }
 
     @Uninterruptible(reason = "Prevent VM operations that modify the recurring callbacks.")
@@ -182,7 +183,7 @@ public class RecurringCallbackSupport {
      * Resumes the execution of recurring callbacks for the current thread. The callback execution
      * might be triggered at the next safepoint check.
      */
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = "Must not contain safepoint checks.")
     public static void resumeCallbackTimerAtNextSafepointCheck() {
         if (!isEnabled()) {
             return;
@@ -309,8 +310,8 @@ public class RecurringCallbackSupport {
         @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
         @SuppressWarnings("hiding")
         public void initialize(long targetIntervalNanos, RecurringCallback callback) {
-            assert !isInitialized() : "initialize() may only be called once";
-            assert targetIntervalNanos > 0;
+            VMError.guarantee(!isInitialized(), "initialize() may only be called once");
+            VMError.guarantee(targetIntervalNanos > 0, "invalid recurring callback interval");
 
             this.targetIntervalNanos = targetIntervalNanos;
             this.flexibleTargetIntervalNanos = (long) (targetIntervalNanos * TARGET_INTERVAL_FLEXIBILITY);
@@ -435,7 +436,17 @@ public class RecurringCallbackSupport {
 
         @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
         private boolean isCallbackDisabled() {
-            return isExecuting || isCallbackTimerSuspended();
+            /*
+             * When a thread holds the ThreadsLock with write access, safepoint checks are typically
+             * either disallowed or recurring callbacks are explicitly disabled. However, if a
+             * thread acquires the ThreadsLock while in STATUS_IN_NATIVE, it is possible to enter
+             * the safepoint slowpath when doing the transition back to STATUS_IN_JAVA.
+             *
+             * Recurring callbacks may trigger VM operations such as GCs. So. deadlocks could happen
+             * if we tried to execute a recurring callback while holding the ThreadsLock with write
+             * access.
+             */
+            return isExecuting || isCallbackTimerSuspended() || ThreadsLock.hasWriteAccess();
         }
 
         /**

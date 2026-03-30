@@ -34,6 +34,10 @@ import com.oracle.svm.graal.meta.SubstrateType;
 import com.oracle.svm.interpreter.metadata.CremaMethodAccess;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaField;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaType;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.debug.Assertions;
 import jdk.graal.compiler.debug.GraalError;
@@ -48,6 +52,7 @@ import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
 import jdk.vm.ci.meta.SpeculationLog;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public final class RistrettoMetaAccess extends SubstrateMetaAccess {
     private final MetaAccessProvider decoratee;
 
@@ -58,13 +63,13 @@ public final class RistrettoMetaAccess extends SubstrateMetaAccess {
     @Override
     public SubstrateType lookupJavaType(Class<?> clazz) {
         InterpreterResolvedJavaType iType = (InterpreterResolvedJavaType) DynamicHub.fromClass(clazz).getInterpreterType();
-        return RistrettoType.create(iType);
+        return RistrettoType.getOrCreate(iType);
     }
 
     @Override
     public ResolvedJavaMethod lookupJavaMethod(Executable reflectionMethod) {
         // we directly go over crema here
-        return RistrettoMethod.create(CremaMethodAccess.toJVMCI(reflectionMethod));
+        return RistrettoMethod.getOrCreate(CremaMethodAccess.toJVMCI(reflectionMethod));
     }
 
     @Override
@@ -73,13 +78,13 @@ public final class RistrettoMetaAccess extends SubstrateMetaAccess {
         if (Modifier.isStatic(reflectionField.getModifiers())) {
             for (var iField : iType.getStaticFields()) {
                 if (iField.getName().equals(reflectionField.getName())) {
-                    return RistrettoField.create((InterpreterResolvedJavaField) iField);
+                    return RistrettoField.getOrCreate((InterpreterResolvedJavaField) iField);
                 }
             }
         } else {
-            for (var iField : iType.getStaticFields()) {
+            for (var iField : iType.getInstanceFields(true)) {
                 if (iField.getName().equals(reflectionField.getName())) {
-                    return RistrettoField.create((InterpreterResolvedJavaField) iField);
+                    return RistrettoField.getOrCreate((InterpreterResolvedJavaField) iField);
                 }
             }
         }
@@ -96,7 +101,7 @@ public final class RistrettoMetaAccess extends SubstrateMetaAccess {
         SubstrateType substrateType = (SubstrateType) svmType;
         DynamicHub hub = substrateType.getHub();
         InterpreterResolvedJavaType iType = (InterpreterResolvedJavaType) hub.getInterpreterType();
-        return RistrettoType.create(iType);
+        return RistrettoType.getOrCreate(iType);
     }
 
     @Override

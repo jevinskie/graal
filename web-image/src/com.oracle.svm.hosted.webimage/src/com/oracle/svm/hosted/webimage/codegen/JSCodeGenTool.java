@@ -26,8 +26,6 @@ package com.oracle.svm.hosted.webimage.codegen;
 
 import static com.oracle.svm.webimage.functionintrinsics.JSCallNode.SHOULD_NOT_REACH_HERE;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
 
@@ -35,7 +33,6 @@ import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.EconomicSet;
 import org.graalvm.collections.MapCursor;
 
-import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.webimage.JSCodeBuffer;
 import com.oracle.svm.hosted.webimage.LowerableFile;
@@ -43,6 +40,7 @@ import com.oracle.svm.hosted.webimage.WebImageHostedConfiguration;
 import com.oracle.svm.hosted.webimage.js.JSBody;
 import com.oracle.svm.hosted.webimage.js.JSKeyword;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
+import com.oracle.svm.shared.option.HostedOptionValues;
 import com.oracle.svm.util.AnnotationUtil;
 import com.oracle.svm.webimage.annotation.WebImage;
 import com.oracle.svm.webimage.hightiercodegen.CodeGenTool;
@@ -388,28 +386,13 @@ public class JSCodeGenTool extends CodeGenTool {
     }
 
     @Override
-    public void genFieldName(Field field) {
-        genFieldName(getProviders().getMetaAccess().lookupJavaField(field));
-    }
-
-    @Override
     public void genTypeName(ResolvedJavaType type) {
         codeBuffer.emitText(getJSProviders().typeControl().requestTypeName(type));
     }
 
     @Override
-    public void genTypeName(Class<?> type) {
-        genTypeName(getProviders().getMetaAccess().lookupJavaType(type));
-    }
-
-    @Override
     public void genMethodName(ResolvedJavaMethod method) {
         codeBuffer.emitText(getJSProviders().typeControl().requestMethodName(method));
-    }
-
-    @Override
-    public void genMethodName(Method method) {
-        genMethodName(getProviders().getMetaAccess().lookupJavaMethod(method));
     }
 
     @Override
@@ -541,7 +524,7 @@ public class JSCodeGenTool extends CodeGenTool {
     }
 
     public String vmClassName() {
-        String imageName = WebImageOptions.VMClassName.getValue(HostedOptionValues.singleton());
+        String imageName = WebImageOptions.VMClassName.getValue(HostedOptionValues.singleton().get());
         imageName = imageName.replaceAll("[^A-Za-z]", "_");
         return imageName;
     }

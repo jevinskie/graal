@@ -39,6 +39,7 @@ import java.net.StandardProtocolFamily;
 import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousCloseException;
+import java.nio.channels.CancelledKeyException;
 import java.nio.channels.Channel;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedByInterruptException;
@@ -52,6 +53,8 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.ScatteringByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.SelectableChannel;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.channels.WritableByteChannel;
@@ -83,6 +86,7 @@ import com.oracle.truffle.espresso.impl.Field;
 import com.oracle.truffle.espresso.impl.Method;
 import com.oracle.truffle.espresso.impl.ObjectKlass;
 import com.oracle.truffle.espresso.libs.LibsState;
+import com.oracle.truffle.espresso.meta.EspressoError;
 import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
 import com.oracle.truffle.espresso.runtime.OS;
@@ -120,6 +124,7 @@ public final class TruffleIO implements ContextAccess {
     private static final int FD_STDIN = 0;
     private static final int FD_STDOUT = 1;
     private static final int FD_STDERR = 2;
+    public static final int INVALID_FD = -1;
 
     // region API
 
@@ -152,7 +157,7 @@ public final class TruffleIO implements ContextAccess {
     public final Method java_io_TruffleFileSystem_init;
 
     public final ObjectKlass sun_nio_fs_TrufflePath;
-    public final Field sun_nio_fs_TrufflePath_HIDDEN_TRUFFLE_FILE;
+    public final Field sun_nio_fs_TrufflePath_0file;
 
     public final ObjectKlass sun_nio_fs_TruffleBasicFileAttributes;
     public final Method sun_nio_fs_TruffleBasicFileAttributes_init;
@@ -603,6 +608,54 @@ public final class TruffleIO implements ContextAccess {
     }
 
     /**
+     * Works as specified by {@link TruffleIO#register(StaticObject, FDAccess, Selector, int)} but
+     * with the raw int fd.
+     */
+    @TruffleBoundary
+    public SelectionKey register(int fd, Selector selector, int ops) {
+        SelectableChannel selectableChannel = getSelectableChannel(fd);
+        try {
+            if (selectableChannel.isBlocking()) {
+                throw Throw.throwIOException("Channel is blocking and thus can't be registered to a Selector", context);
+            }
+            context.getLibsState().checkValidOps(selectableChannel, ops);
+            return selectableChannel.register(selector, ops);
+        } catch (IOException e) {
+            throw Throw.throwIOException(e, context);
+        } catch (CancelledKeyException e) {
+            /*
+             * We had issues with CancelledKeyExceptions. They should not occur anymore if this
+             * method is called by the TruffleSelector since there we have ensured that the host
+             * SelectionKey is canceled if and only if the guest SelectionKey is canceled. See
+             * sun.nio.ch.TruffleSelector.implDereg.
+             *
+             * If we reach here from Net.poll a CancelledKeyExceptions should not occur either since
+             * we use the selector for exactly one select operation for a given fd then close it.
+             */
+            throw EspressoError.shouldNotReachHere(e);
+        }
+    }
+
+    /**
+     * Registers a file descriptor with a selector for the specified operations.
+     * <p>
+     * The file descriptor {@code fd} is associated with a channel, which must be an instance of
+     * {@link SelectableChannel}. If the channel is not selectable, an {@link IOException} is
+     * thrown.
+     * 
+     * @param self A file descriptor holder
+     * @param fdAccess How to get the file descriptor from the holder
+     * @param selector The selector to register with
+     * @param ops the operations to monitor (e.g. {@link SelectionKey#OP_READ},
+     *            {@link SelectionKey#OP_WRITE})
+     */
+    public SelectionKey register(@JavaType(Object.class) StaticObject self,
+                    FDAccess fdAccess, Selector selector, int ops) {
+        int fd = getFD(getFileDesc(self, fdAccess));
+        return register(fd, selector, ops);
+    }
+
+    /**
      * Opens a file and associates it with the given file descriptor holder.
      *
      * @param self A file descriptor holder.
@@ -930,6 +983,15 @@ public final class TruffleIO implements ContextAccess {
     }
 
     /**
+     * @return whether the channel associated with the fd is in blocking mode.
+     */
+    @TruffleBoundary
+    public boolean isBlocking(@JavaType(Object.class) StaticObject self,
+                    FDAccess fdAccess) {
+        return getSelectableChannel(self, fdAccess).isBlocking();
+    }
+
+    /**
      * Drains the content of the file associated with the given file descriptor holder. That means
      * reading the entire file, but discarding all that's read.
      *
@@ -1209,7 +1271,7 @@ public final class TruffleIO implements ContextAccess {
         this.fileChannelImplSync = new FileChannelImpl_Sync(this);
 
         sun_nio_fs_TrufflePath = meta.knownKlass(Types.sun_nio_fs_TrufflePath);
-        sun_nio_fs_TrufflePath_HIDDEN_TRUFFLE_FILE = sun_nio_fs_TrufflePath.requireHiddenField(Names.HIDDEN_TRUFFLE_FILE);
+        sun_nio_fs_TrufflePath_0file = sun_nio_fs_TrufflePath.requireHiddenField(Names.HIDDEN_file);
 
         java_io_FileSystem = meta.knownKlass(Types.java_io_FileSystem);
         fileSystemSync = new FileSystem_Sync(this);

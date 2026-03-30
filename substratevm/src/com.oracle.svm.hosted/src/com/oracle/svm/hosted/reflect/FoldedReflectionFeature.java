@@ -38,22 +38,23 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.graalvm.collections.EconomicSet;
+
 import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.reports.ReportUtils;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
+import com.oracle.svm.shared.option.HostedOptionKey;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
 import com.oracle.svm.hosted.NativeImageGenerator;
+import com.oracle.svm.shared.option.HostedOptionValues;
 
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.util.json.JsonWriter;
-import org.graalvm.collections.EconomicSet;
 
 /**
  * This feature prints all reflective elements that are in the native image heap. Its goal is to
@@ -108,7 +109,7 @@ public class FoldedReflectionFeature implements InternalFeature {
     @Override
     public void afterAnalysis(AfterAnalysisAccess access) {
         BigBang bb = ((FeatureImpl.AfterAnalysisAccessImpl) access).getBigBang();
-        Path reportsPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton()).resolve("reports");
+        Path reportsPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton().get()).resolve("reports");
         ReportUtils.report("folded reflection elements", reportsPath.resolve("folded_reflection_stats.json"), writer -> printElements(writer, bb));
     }
 

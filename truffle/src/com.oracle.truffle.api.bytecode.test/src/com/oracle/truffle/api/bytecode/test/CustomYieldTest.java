@@ -218,7 +218,8 @@ public class CustomYieldTest {
             assertEquals(BytecodeTier.UNCACHED, result.root().getSourceRootNode().getBytecodeNode().getTier());
             assertEquals(123, result.continueWith(123));
         }
-        assertEquals(BytecodeTier.CACHED, root.getBytecodeNode().getTier());
+        // After 5 calls + resumes, the node will transition to cached on the next call.
+        assertEquals(BytecodeTier.UNCACHED, root.getBytecodeNode().getTier());
         CustomYieldResult result = (CustomYieldResult) root.getCallTarget().call(42);
         assertEquals(42, result.value());
         assertEquals(BytecodeTier.CACHED, result.root().getSourceRootNode().getBytecodeNode().getTier());
@@ -360,7 +361,7 @@ public class CustomYieldTest {
         assertEquals(BytecodeTier.UNCACHED, result.root().getSourceRootNode().getBytecodeNode().getTier());
         assertEquals(123, result.continueWith(123));
 
-        assertEquals(BytecodeTier.CACHED, root.getBytecodeNode().getTier());
+        assertEquals(BytecodeTier.UNCACHED, root.getBytecodeNode().getTier());
         result = (CustomYieldResult) root.getCallTarget().call(21);
         assertEquals(42, result.value());
         assertEquals(BytecodeTier.CACHED, result.root().getSourceRootNode().getBytecodeNode().getTier());
@@ -548,8 +549,8 @@ public class CustomYieldTest {
         ContinuationResult cont = (ContinuationResult) root.getCallTarget().call(2);
         assertEquals(42, cont.getResult());
         AbstractInstructionTest.assertInstructions(root,
-                        "load.argument$Int",
-                        "c.AddConstantsYield$Int",
+                        "load.argument",
+                        "c.AddConstantsYield",
                         "return");
         assertEquals(123, cont.continueWith(123));
 
@@ -596,7 +597,7 @@ public class CustomYieldTest {
             assertEquals(BytecodeTier.UNCACHED, result.root().getSourceRootNode().getBytecodeNode().getTier());
             assertEquals(123, result.continueWith(123));
 
-            assertEquals(BytecodeTier.CACHED, root.getBytecodeNode().getTier());
+            assertEquals(BytecodeTier.UNCACHED, root.getBytecodeNode().getTier());
             result = (CustomYieldResult) root.getCallTarget().call(19);
             assertEquals("no result", result.value());
             assertEquals(BytecodeTier.CACHED, result.root().getSourceRootNode().getBytecodeNode().getTier());
@@ -641,7 +642,7 @@ public class CustomYieldTest {
             assertEquals(BytecodeTier.UNCACHED, cont.getContinuationRootNode().getSourceRootNode().getBytecodeNode().getTier());
             assertEquals(123, cont.continueWith(123));
 
-            assertEquals(BytecodeTier.CACHED, root.getBytecodeNode().getTier());
+            assertEquals(BytecodeTier.UNCACHED, root.getBytecodeNode().getTier());
             cont = (ContinuationResult) root.getCallTarget().call(19);
             assertEquals(21, cont.getResult());
             assertEquals(BytecodeTier.CACHED, cont.getContinuationRootNode().getSourceRootNode().getBytecodeNode().getTier());
@@ -678,6 +679,7 @@ public class CustomYieldTest {
 
             ContinuationResult cont = (ContinuationResult) root.getCallTarget().call(0);
             assertEquals(2, cont.getResult());
+
             assertEquals(123, cont.continueWith(123));
 
             cont = (ContinuationResult) root.getCallTarget().call(0);

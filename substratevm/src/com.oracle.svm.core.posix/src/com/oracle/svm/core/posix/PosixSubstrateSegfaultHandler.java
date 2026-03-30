@@ -32,11 +32,11 @@ import org.graalvm.word.PointerBase;
 
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.SubstrateSegfaultHandler;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.c.function.CEntryPointOptions;
 import com.oracle.svm.core.c.function.CEntryPointOptions.NoEpilogue;
 import com.oracle.svm.core.c.function.CEntryPointOptions.NoPrologue;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.headers.LibC;
 import com.oracle.svm.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.log.Log;
@@ -45,11 +45,11 @@ import com.oracle.svm.core.posix.headers.Signal;
 import com.oracle.svm.core.posix.headers.Signal.AdvancedSignalDispatcher;
 import com.oracle.svm.core.posix.headers.Signal.siginfo_t;
 import com.oracle.svm.core.posix.headers.Signal.ucontext_t;
-import com.oracle.svm.core.traits.BuiltinTraits.AllAccess;
-import com.oracle.svm.core.traits.BuiltinTraits.SingleLayer;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 @AutomaticallyRegisteredImageSingleton({SubstrateSegfaultHandler.class, PosixSubstrateSegfaultHandler.class})
 @SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
@@ -94,7 +94,8 @@ class PosixSubstrateSegfaultHandler extends SubstrateSegfaultHandler {
     }
 
     @Override
-    public void install() {
+    @Uninterruptible(reason = "Signal handlers can be installed during early isolate startup before thread state is set up.")
+    protected void install0() {
         boolean isSignalHandlingAllowed = SubstrateOptions.isSignalHandlingAllowed();
         PosixSignalHandlerSupport.installNativeSignalHandler(Signal.SignalEnum.SIGSEGV, SIGNAL_HANDLER.getFunctionPointer(), Signal.SA_NODEFER(), isSignalHandlingAllowed);
         PosixSignalHandlerSupport.installNativeSignalHandler(Signal.SignalEnum.SIGBUS, SIGNAL_HANDLER.getFunctionPointer(), Signal.SA_NODEFER(), isSignalHandlingAllowed);

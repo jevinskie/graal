@@ -49,7 +49,7 @@ import com.oracle.objectfile.debugentry.MethodEntry;
 import com.oracle.objectfile.debugentry.range.Range;
 import com.oracle.objectfile.elf.ELFMachine;
 import com.oracle.svm.core.OS;
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.c.CGlobalData;
 import com.oracle.svm.core.c.CGlobalDataFactory;
 import com.oracle.svm.core.debug.SubstrateDebugInfoProvider;
@@ -62,7 +62,7 @@ import com.oracle.svm.core.posix.headers.Time;
 import com.oracle.svm.core.posix.headers.linux.LinuxTime;
 import com.oracle.svm.core.util.TimeUtils;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.util.LogUtils;
 
 import jdk.graal.compiler.core.common.NumUtil;
 import jdk.graal.compiler.options.Option;

@@ -41,13 +41,13 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.core.option.RuntimeOptionKey;
 import com.oracle.svm.core.option.RuntimeOptionValues;
-import com.oracle.svm.core.option.SubstrateOptionKey;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.SubstrateOptionKey;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
@@ -298,13 +298,13 @@ public class NativeGCOptions {
         @Override
         public byte[] get() {
             NativeGCArgumentsBuffer buffer = new NativeGCArgumentsBuffer();
-            UnmodifiableEconomicMap<OptionKey<?>, Object> map = HostedOptionValues.singleton().getMap();
+            UnmodifiableEconomicMap<OptionKey<?>, Object> map = HostedOptionValues.singleton().get().getMap();
             for (Field field : optionFields) {
                 try {
                     Class<?> type = field.getType();
                     if (HostedOptionKey.class.isAssignableFrom(type)) {
                         HostedOptionKey<?> key = (HostedOptionKey<?>) field.get(null);
-                        Object value = key.getValueOrDefault(map);
+                        Object value = key.getValue(new OptionValues(map));
                         if (key.shouldPassToNativeGC() && value != null) {
                             buffer.putString(key.getName());
                             buffer.putPrimitive(value);
@@ -331,7 +331,7 @@ public class NativeGCOptions {
         @Override
         public byte[] get() {
             NativeGCArgumentsBuffer buffer = new NativeGCArgumentsBuffer();
-            OptionValues optionValues = RuntimeOptionValues.singleton();
+            OptionValues optionValues = RuntimeOptionValues.singleton().get();
             for (Field field : optionFields) {
                 try {
                     Class<?> type = field.getType();

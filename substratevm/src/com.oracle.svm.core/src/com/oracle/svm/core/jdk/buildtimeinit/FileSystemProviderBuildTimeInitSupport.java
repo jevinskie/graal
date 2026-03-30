@@ -45,16 +45,21 @@ import com.oracle.svm.core.annotate.RecomputeFieldValue.Kind;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.jdk.FileSystemProvidersInitializedAtBuildTime;
 import com.oracle.svm.core.jdk.JRTSupport;
 import com.oracle.svm.core.jdk.SystemPropertiesSupport;
 import com.oracle.svm.core.jdk.UserSystemProperty;
 import com.oracle.svm.core.jdk.runtimeinit.FileSystemProviderRunTimeInitSupport;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.options.Option;
 import jdk.internal.util.StaticProperty;
@@ -64,6 +69,7 @@ import jdk.internal.util.StaticProperty;
  * image {@linkplain FileSystemProvidersInitializedAtBuildTime build time}. Run-time initialization
  * related functionality can be found in {@link FileSystemProviderRunTimeInitSupport}.
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
 public final class FileSystemProviderBuildTimeInitSupport {
 
     public static class Options {
@@ -127,6 +133,7 @@ public final class FileSystemProviderBuildTimeInitSupport {
 }
 
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
 final class FileSystemProviderBuildTimeInitFeature implements InternalFeature {
 
     @Override

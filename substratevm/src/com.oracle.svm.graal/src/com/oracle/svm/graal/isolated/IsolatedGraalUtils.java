@@ -55,7 +55,7 @@ import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.option.RuntimeOptionKey;
 import com.oracle.svm.core.option.RuntimeOptionValues;
 import com.oracle.svm.core.os.MemoryProtectionProvider;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.graal.RuntimeCompilationSupport;
 import com.oracle.svm.graal.SubstrateGraalUtils;
 import com.oracle.svm.graal.meta.SubstrateMethod;
@@ -124,7 +124,7 @@ public final class IsolatedGraalUtils {
 
     private static void appendOptionsRelevantForCompilationIsolates(CreateIsolateParameters.Builder builder) {
         /* Append all native image options that are relevant for the compilation isolate. */
-        var cur = RuntimeOptionValues.singleton().getMap().getEntries();
+        var cur = RuntimeOptionValues.singleton().get().getMap().getEntries();
         while (cur.advance()) {
             if (cur.getKey() instanceof RuntimeOptionKey<?> runtimeOptionKey && runtimeOptionKey.shouldCopyToCompilationIsolate()) {
                 appendArgument(builder, runtimeOptionKey, cur.getValue());
@@ -136,7 +136,7 @@ public final class IsolatedGraalUtils {
 
         /* Disable signal handling for compilation isolates. */
         appendArgument(builder, SubstrateOptions.ConcealedOptions.EnableSignalHandling, false);
-        appendArgument(builder, SubstrateSegfaultHandler.Options.InstallSegfaultHandler, false);
+        appendArgument(builder, SubstrateSegfaultHandler.ConcealedOptions.InstallSegfaultHandler, false);
     }
 
     private static void appendOptionsExplicitlySetForCompilationIsolates(CreateIsolateParameters.Builder builder) {
@@ -246,7 +246,7 @@ public final class IsolatedGraalUtils {
 
         SubstrateMethod method = ImageHeapObjects.deref(methodRef);
         RuntimeConfiguration runtimeConfiguration = RuntimeCompilationSupport.getRuntimeConfig();
-        DebugContext debug = new Builder(RuntimeOptionValues.singleton(), new GraalDebugHandlersFactory(runtimeConfiguration.getProviders().getSnippetReflection())).build();
+        DebugContext debug = new Builder(RuntimeOptionValues.singleton().get(), new GraalDebugHandlersFactory(runtimeConfiguration.getProviders().getSnippetReflection())).build();
         CompilationResult compilationResult = SubstrateGraalUtils.doCompile(debug, RuntimeCompilationSupport.getRuntimeConfig(),
                         RuntimeCompilationSupport.getLIRSuites(), method);
         ClientHandle<SubstrateInstalledCode> installedCodeHandle = IsolatedRuntimeCodeInstaller.installInClientIsolate(methodRef, compilationResult, installedCodeFactoryHandle);
@@ -267,7 +267,7 @@ public final class IsolatedGraalUtils {
             }
         } else {
             RuntimeConfiguration runtimeConfiguration = RuntimeCompilationSupport.getRuntimeConfig();
-            try (DebugContext debug = new Builder(RuntimeOptionValues.singleton(), new GraalDebugHandlersFactory(runtimeConfiguration.getProviders().getSnippetReflection())).build()) {
+            try (DebugContext debug = new Builder(RuntimeOptionValues.singleton().get(), new GraalDebugHandlersFactory(runtimeConfiguration.getProviders().getSnippetReflection())).build()) {
                 SubstrateGraalUtils.compile(debug, method);
             }
         }
@@ -282,7 +282,7 @@ public final class IsolatedGraalUtils {
         // The context is cleared in the CEntryPointOptions.epilogue (also in case of an exception)
 
         RuntimeConfiguration runtimeConfiguration = RuntimeCompilationSupport.getRuntimeConfig();
-        try (DebugContext debug = new Builder(RuntimeOptionValues.singleton(), new GraalDebugHandlersFactory(runtimeConfiguration.getProviders().getSnippetReflection())).build()) {
+        try (DebugContext debug = new Builder(RuntimeOptionValues.singleton().get(), new GraalDebugHandlersFactory(runtimeConfiguration.getProviders().getSnippetReflection())).build()) {
             SubstrateGraalUtils.doCompile(debug, RuntimeCompilationSupport.getRuntimeConfig(), RuntimeCompilationSupport.getLIRSuites(),
                             ImageHeapObjects.deref(methodRef));
         }
@@ -292,7 +292,7 @@ public final class IsolatedGraalUtils {
 
     private static byte[] encodeNonNativeImageRuntimeOptionValues() {
         EconomicMap<OptionKey<?>, Object> result = EconomicMap.create();
-        var cur = RuntimeOptionValues.singleton().getMap().getEntries();
+        var cur = RuntimeOptionValues.singleton().get().getMap().getEntries();
         while (cur.advance()) {
             OptionKey<?> optionKey = cur.getKey();
             if (!(optionKey instanceof RuntimeOptionKey)) {
@@ -305,7 +305,7 @@ public final class IsolatedGraalUtils {
          * of users. Always setting the DumpPath option in the compilation isolates is the easiest
          * way to achieve that.
          */
-        result.put(DebugOptions.DumpPath, DebugOptions.getDumpDirectoryName(RuntimeOptionValues.singleton()));
+        result.put(DebugOptions.DumpPath, DebugOptions.getDumpDirectoryName(RuntimeOptionValues.singleton().get()));
         return OptionValuesEncoder.encode(result);
     }
 

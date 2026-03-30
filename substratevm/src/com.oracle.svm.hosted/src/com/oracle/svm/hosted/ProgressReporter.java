@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -65,34 +66,20 @@ import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.graal.pointsto.reports.ReportUtils;
 import com.oracle.graal.pointsto.util.Timer;
 import com.oracle.graal.pointsto.util.TimerCollection;
-import com.oracle.svm.common.option.CommonOptionParser;
 import com.oracle.svm.core.BuildArtifacts;
 import com.oracle.svm.core.BuildArtifacts.ArtifactType;
 import com.oracle.svm.core.RuntimeAssertionsSupport;
 import com.oracle.svm.core.SubstrateGCOptions;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.VM;
 import com.oracle.svm.core.configure.ConditionalRuntimeValue;
 import com.oracle.svm.core.heap.Heap;
-import com.oracle.svm.core.hub.ClassForNameSupport;
 import com.oracle.svm.core.jdk.Resources;
 import com.oracle.svm.core.jdk.resources.ResourceStorageEntryBase;
-import com.oracle.svm.core.option.AccumulatingLocatableMultiOptionValue;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.option.OptionMigrationMessage;
-import com.oracle.svm.core.option.OptionOrigin;
-import com.oracle.svm.core.option.OptionUtils;
 import com.oracle.svm.core.option.RuntimeOptionKey;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.core.util.ByteFormattingUtil;
 import com.oracle.svm.core.util.TimeUtils;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.ProgressReporterFeature.UserRecommendation;
 import com.oracle.svm.hosted.ProgressReporterJsonHelper.AnalysisResults;
 import com.oracle.svm.hosted.ProgressReporterJsonHelper.GeneralInfo;
@@ -106,8 +93,21 @@ import com.oracle.svm.hosted.reflect.ReflectionHostedSupport;
 import com.oracle.svm.hosted.util.CPUType;
 import com.oracle.svm.hosted.util.DiagnosticUtils;
 import com.oracle.svm.hosted.util.VMErrorReporter;
+import com.oracle.svm.shared.option.AccumulatingLocatableMultiOptionValue;
+import com.oracle.svm.shared.option.CommonOptionParser;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.OptionMigrationMessage;
+import com.oracle.svm.shared.option.OptionOrigin;
+import com.oracle.svm.shared.option.OptionUtils;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.ImageBuildStatistics;
-import com.oracle.svm.util.LogUtils;
 import com.sun.management.OperatingSystemMXBean;
 
 import jdk.graal.compiler.options.OptionDescriptor;
@@ -366,16 +366,17 @@ public class ProgressReporter {
          * Step 2: scan HostedOptionValues and collect migrationMessage, alternatives, and origins.
          */
         Map<String, ExperimentalOptionDetails> experimentalOptions = new HashMap<>();
-        var hostedOptionValues = HostedOptionValues.singleton().getMap();
-        for (OptionKey<?> option : hostedOptionValues.getKeys()) {
+        OptionValues hostedOptionValues = HostedOptionValues.singleton().get();
+        var hostedOptionValuesMap = hostedOptionValues.getMap();
+        for (OptionKey<?> option : hostedOptionValuesMap.getKeys()) {
             if (option instanceof RuntimeOptionKey || option == SubstrateOptions.UnlockExperimentalVMOptions || option.getDescriptor().getStability() != OptionStability.EXPERIMENTAL) {
                 continue;
             }
             OptionDescriptor descriptor = option.getDescriptor();
-            Object optionValue = option.getValueOrDefault(hostedOptionValues);
+            Object optionValue = option.getValue(hostedOptionValues);
             String emptyOrBooleanValue = "";
             if (descriptor.getOptionValueType() == Boolean.class) {
-                emptyOrBooleanValue = Boolean.parseBoolean(optionValue.toString()) ? "+" : "-";
+                emptyOrBooleanValue = Boolean.parseBoolean(Objects.toString(optionValue)) ? "+" : "-";
             }
             String prefixedOptionName = CommonOptionParser.HOSTED_OPTION_PREFIX + emptyOrBooleanValue + option.getName();
             if (!experimentalBuilderOptionsAndOrigins.containsKey(prefixedOptionName)) {
@@ -502,8 +503,8 @@ public class ProgressReporter {
         recordJsonMetric(AnalysisResults.METHOD_REACHABLE, reachableMethods);
         l().a(typesFieldsMethodFormat, reachableTypes, reachableFields, reachableMethods)
                         .doclink("found reachable", "#glossary-reachability").println();
-        int reflectClassesCount = ClassForNameSupport.currentLayer().count();
         ReflectionHostedSupport rs = ImageSingletons.lookup(ReflectionHostedSupport.class);
+        int reflectClassesCount = rs.getReflectionClassesCount();
         int reflectFieldsCount = rs.getReflectionFieldsCount();
         int reflectMethodsCount = rs.getReflectionMethodsCount();
         recordJsonMetric(AnalysisResults.METHOD_REFLECT, reflectMethodsCount);
@@ -868,8 +869,8 @@ public class ProgressReporter {
             l().println();
             l().dim().a("> %s", unhandledThrowable).reset().println();
             l().println();
-            l().a("Please inspect the generated error report at:").println();
-            l().link(NativeImageOptions.getErrorFilePath(parsedHostedOptions)).println();
+            // Keep in sync with the {@code catch_files} array in {@code ci/common.jsonnet}.
+            l().a("Please inspect the generated error report at: '").link(NativeImageOptions.getErrorFilePath(parsedHostedOptions)).a("'").println();
             l().println();
             l().a("If you are unable to resolve this problem, please file an issue with the error report at:").println();
             var supportUrl = VM.getSupportUrl();
@@ -948,7 +949,7 @@ public class ProgressReporter {
 
     private static Path reportImageBuildStatistics() {
         Consumer<PrintWriter> statsReporter = ImageSingletons.lookup(ImageBuildStatistics.class).getReporter();
-        Path reportsPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton()).resolve("reports");
+        Path reportsPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton().get()).resolve("reports");
         return ReportUtils.report("image build statistics", reportsPath.resolve("image_build_statistics.json"), statsReporter, false);
     }
 

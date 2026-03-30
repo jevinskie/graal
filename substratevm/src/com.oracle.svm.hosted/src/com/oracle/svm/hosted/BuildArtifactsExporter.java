@@ -39,12 +39,12 @@ import com.oracle.graal.pointsto.reports.ReportUtils;
 import com.oracle.svm.core.BuildArtifacts;
 import com.oracle.svm.core.BuildArtifacts.ArtifactType;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.util.json.JsonWriter;
 
@@ -63,7 +63,7 @@ public class BuildArtifactsExporter {
         if (buildArtifacts.isEmpty() || !SubstrateOptions.GenerateBuildArtifactsFile.getValue()) {
             return; // nothing to do
         }
-        Path buildPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton());
+        Path buildPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton().get());
         Path targetPath = buildPath.resolve(SubstrateOptions.BUILD_ARTIFACTS_FILE_NAME);
         /*
          * Create intermediate map from buildArtifactsMap for JSON conversion. note that this also
@@ -94,7 +94,7 @@ public class BuildArtifactsExporter {
     }
 
     private static void reportDeprecatedBuildArtifacts(String imageName, BuildArtifacts buildArtifacts) {
-        Path buildDir = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton());
+        Path buildDir = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton().get());
         Consumer<PrintWriter> writerConsumer = writer -> buildArtifacts.forEach((artifactType, paths) -> {
             writer.println("[" + artifactType + "]");
             if (artifactType == BuildArtifacts.ArtifactType.JDK_LIBRARY_SHIM) {

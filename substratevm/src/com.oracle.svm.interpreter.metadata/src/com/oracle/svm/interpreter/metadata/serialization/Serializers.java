@@ -40,9 +40,9 @@ import com.oracle.svm.core.FunctionPointerHolder;
 import com.oracle.svm.core.graal.code.PreparedArgumentType;
 import com.oracle.svm.core.graal.code.PreparedSignature;
 import com.oracle.svm.core.hub.registry.SymbolsSupport;
-import com.oracle.svm.core.layeredimagesingleton.MultiLayeredImageSingleton;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.espresso.classfile.ParserConstantPool;
 import com.oracle.svm.espresso.classfile.descriptors.ModifiedUTF8;
 import com.oracle.svm.espresso.classfile.descriptors.Symbol;
@@ -630,11 +630,13 @@ public final class Serializers {
                     (context, in) -> {
                         InterpreterResolvedObjectType holder = context.readReference(in);
                         InterpreterResolvedJavaMethod[] vtable = context.readerFor(InterpreterResolvedJavaMethod[].class).read(context, in);
-                        return new InterpreterResolvedObjectType.VTableHolder(holder, vtable);
+                        int classVtableLength = LEB128.readUnsignedInt(in);
+                        return new InterpreterResolvedObjectType.VTableHolder(holder, vtable, classVtableLength);
                     },
                     (context, out, value) -> {
                         context.writeReference(out, value.holder);
                         context.writerFor(InterpreterResolvedJavaMethod[].class).write(context, out, value.vtable);
+                        LEB128.writeUnsignedInt(out, value.classVtableLength);
                     });
 
     static final ValueSerializer<PreparedArgumentType> PREPARED_ARGUMENT_TYPE = createSerializer(

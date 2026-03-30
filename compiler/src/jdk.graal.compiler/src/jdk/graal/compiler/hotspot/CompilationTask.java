@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -45,7 +45,6 @@ import jdk.graal.compiler.core.CompilationPrinter;
 import jdk.graal.compiler.core.CompilationWatchDog;
 import jdk.graal.compiler.core.CompilationWrapper;
 import jdk.graal.compiler.core.common.CompilationIdentifier;
-import jdk.graal.compiler.core.common.LibGraalSupport;
 import jdk.graal.compiler.debug.Assertions;
 import jdk.graal.compiler.debug.CounterKey;
 import jdk.graal.compiler.debug.DebugCloseable;
@@ -63,6 +62,7 @@ import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.graal.compiler.nodes.spi.ProfileProvider;
 import jdk.graal.compiler.nodes.spi.StableProfileProvider;
 import jdk.graal.compiler.nodes.spi.StableProfileProvider.TypeFilter;
+import jdk.graal.compiler.options.LibGraalSupport;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionType;
@@ -515,7 +515,7 @@ public class CompilationTask implements CompilationWatchDog.EventHandler {
             }
 
             if (values != null) {
-                newOptions = new OptionValues(newOptions, values);
+                newOptions = newOptions.derive(values);
                 if (PrintCompilation.getValue(newOptions)) {
                     TTY.println("Compiling " + getMethod() + " with extra options: " + new OptionValues(values));
                 }
@@ -533,7 +533,7 @@ public class CompilationTask implements CompilationWatchDog.EventHandler {
                 m.put(InlineDuringParsing, false);
             }
             if (!m.isEmpty()) {
-                newOptions = new OptionValues(newOptions, m);
+                newOptions = newOptions.derive(m);
             }
         }
 

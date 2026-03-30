@@ -38,7 +38,9 @@ import com.oracle.svm.espresso.classfile.descriptors.ByteSequence;
 import com.oracle.svm.espresso.classfile.descriptors.Signature;
 import com.oracle.svm.espresso.classfile.descriptors.Symbol;
 import com.oracle.svm.espresso.classfile.descriptors.Type;
+import com.oracle.svm.espresso.shared.resolver.CallKind;
 
+import jdk.vm.ci.meta.ConstantPool;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -62,7 +64,8 @@ public interface CremaSupport {
 
     Object getStaticStorage(ResolvedJavaField resolved);
 
-    DynamicHub createHub(ParserKlass parsed, ClassDefinitionInfo info, int typeID, String externalName, Module module, ClassLoader classLoader, Class<?> superClass, Class<?>[] superInterfaces);
+    DynamicHub createHub(ParserKlass parsed, ClassDefinitionInfo info, int typeID, String externalName, Module module, ClassLoader classLoader, Class<?> superClass,
+                    Class<?>[] superInterfaces);
 
     DynamicHub getOrCreateArrayHub(DynamicHub dynamicHub);
 
@@ -72,7 +75,7 @@ public interface CremaSupport {
      */
     Object allocateInstance(ResolvedJavaType type);
 
-    Object execute(ResolvedJavaMethod targetMethod, Object[] args, boolean isVirtual);
+    Object execute(ResolvedJavaMethod targetMethod, Object[] args, CallKind callKind);
 
     Class<?> toClass(ResolvedJavaType resolvedJavaType);
 
@@ -104,7 +107,9 @@ public interface CremaSupport {
 
     ResolvedJavaMethod findMethodHandleIntrinsic(ResolvedJavaMethod signaturePolymorphicMethod, Symbol<Signature> signature);
 
-    Object computeEnclosingClass(DynamicHub hub);
+    Class<?> computeDeclaringClass(DynamicHub hub);
+
+    Object[] computeEnclosingMethod(DynamicHub hub);
 
     static CremaSupport singleton() {
         return ImageSingletons.lookup(CremaSupport.class);
@@ -114,4 +119,6 @@ public interface CremaSupport {
 
     @Platforms(Platform.HOSTED_ONLY.class)
     void setEnterDirectInterpreterStubEntryPoint(CFunctionPointer stubEntryPoint);
+
+    ConstantPool getConstantPool(DynamicHub hub);
 }

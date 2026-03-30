@@ -31,7 +31,7 @@ import org.graalvm.word.impl.Word.Operation;
 import com.oracle.graal.pointsto.infrastructure.GraphProvider;
 import com.oracle.graal.pointsto.infrastructure.SubstitutionProcessor;
 import com.oracle.graal.pointsto.infrastructure.WrappedJavaMethod;
-import com.oracle.svm.core.option.HostedOptionValues;
+import com.oracle.svm.shared.option.HostedOptionValues;
 import com.oracle.svm.util.AnnotationUtil;
 
 import jdk.graal.compiler.graph.Node.NodeIntrinsic;
@@ -69,7 +69,7 @@ public class NativeMethodSubstitutionProcessor extends SubstitutionProcessor {
                         AnnotationUtil.isAnnotationPresent(method, CConstant.class)) {
             return method;
         }
-        boolean isHandledByPlugin = replacements.getGraphBuilderPlugins().getInvocationPlugins().lookupInvocation(method, HostedOptionValues.singleton()) != null;
+        boolean isHandledByPlugin = replacements.getGraphBuilderPlugins().getInvocationPlugins().lookupInvocation(method, HostedOptionValues.singleton().get()) != null;
         if (isHandledByPlugin) {
             return method;
         }

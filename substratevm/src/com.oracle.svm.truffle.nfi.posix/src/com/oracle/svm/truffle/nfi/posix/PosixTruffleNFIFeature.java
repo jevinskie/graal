@@ -33,7 +33,7 @@ import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.PointerBase;
 
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.c.libc.GLibC;
 import com.oracle.svm.core.c.libc.LibCBase;
 import com.oracle.svm.core.feature.InternalFeature;
@@ -44,7 +44,7 @@ import com.oracle.svm.core.posix.headers.Dlfcn;
 import com.oracle.svm.core.posix.headers.Dlfcn.GNUExtensions.Lmid_t;
 import com.oracle.svm.core.posix.headers.Dlfcn.GNUExtensions.Lmid_tPointer;
 import com.oracle.svm.core.posix.headers.PosixLibC;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.truffle.nfi.Target_com_oracle_truffle_nfi_backend_libffi_NFIUnsatisfiedLinkError;
 import com.oracle.svm.truffle.nfi.TruffleNFIFeature;
 import com.oracle.svm.truffle.nfi.TruffleNFISupport;

@@ -24,9 +24,9 @@
  */
 package com.oracle.svm.core.jni.functions;
 
-import com.oracle.svm.core.Isolates;
 import org.graalvm.nativeimage.LogHandler;
 import org.graalvm.nativeimage.StackValue;
+import org.graalvm.nativeimage.VMRuntime;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CEntryPoint.Publish;
 import org.graalvm.nativeimage.c.struct.SizeOf;
@@ -36,9 +36,10 @@ import org.graalvm.nativeimage.c.type.CIntPointer;
 import org.graalvm.nativeimage.c.type.WordPointer;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
+import com.oracle.svm.core.Isolates;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.UnmanagedMemoryUtil;
 import com.oracle.svm.core.c.CGlobalData;
 import com.oracle.svm.core.c.CGlobalDataFactory;
@@ -77,8 +78,9 @@ import com.oracle.svm.core.monitor.MonitorSupport;
 import com.oracle.svm.core.snippets.ImplicitExceptions;
 import com.oracle.svm.core.stack.JavaFrameAnchors;
 import com.oracle.svm.core.thread.PlatformThreads;
-import com.oracle.svm.core.util.Utf8;
-import org.graalvm.word.impl.Word;
+import com.oracle.svm.guest.staging.SubstrateGuestOptions;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.Utf8;
 
 /**
  * Implementation of the JNI invocation API for interacting with a Java VM without having an
@@ -152,8 +154,8 @@ public final class JNIInvocationInterface {
                         params.setVersion(4);
                         params.setArgc(argc);
                         params.setArgv(argv);
-                        params.setIgnoreUnrecognizedArguments(vmArgs.getIgnoreUnrecognized());
-                        params.setExitWhenArgumentParsingFails(false);
+                        params.setIgnoreUnrecognizedArgs(vmArgs.getIgnoreUnrecognized());
+                        params.setForJavaMainCall(false);
                     }
                 }
 
@@ -283,7 +285,7 @@ public final class JNIInvocationInterface {
         if (JavaFrameAnchors.getFrameAnchor().isNonNull()) {
             return JNIErrors.JNI_ERR();
         }
-        PlatformThreads.singleton().joinAllNonDaemons();
+        PlatformThreads.singleton().joinAllNonDaemonsInNative();
         return JNIErrors.JNI_OK();
     }
 
@@ -387,6 +389,14 @@ public final class JNIInvocationInterface {
             WordPointer javaVmIdPointer = Word.nullPointer();
             if (hasSpecialVmOptions) {
                 javaVmIdPointer = parseVMOptions(vmArgs);
+            }
+            if (SubstrateGuestOptions.InitializeVM.getValue()) {
+                /*
+                 * `JNI_CreateJavaVM` reaches this point only after all JNI VM options have been
+                 * applied, so startup hooks can safely observe the final launcher configuration
+                 * before any libjvm-backed Crema main dispatch begins.
+                 */
+                VMRuntime.initialize();
             }
 
             JNIJavaVM javaVm = JNIFunctionTables.singleton().getGlobalJavaVM();

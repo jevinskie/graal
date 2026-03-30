@@ -25,7 +25,7 @@
 package com.oracle.svm.graal;
 
 import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RelevantForCompilationIsolates;
-import static com.oracle.svm.core.util.VMError.shouldNotReachHere;
+import static com.oracle.svm.shared.util.VMError.shouldNotReachHere;
 
 import java.io.PrintStream;
 import java.util.EnumMap;
@@ -36,10 +36,9 @@ import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.heap.ImageHeapScanner;
-import com.oracle.svm.common.option.CommonOptionParser;
 import com.oracle.svm.core.CPUFeatureAccess;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.deopt.SubstrateInstalledCode;
 import com.oracle.svm.core.graal.code.SubstrateCompilationIdentifier;
 import com.oracle.svm.core.graal.code.SubstrateCompilationResult;
@@ -50,12 +49,13 @@ import com.oracle.svm.core.meta.SubstrateObjectConstant;
 import com.oracle.svm.core.option.RuntimeOptionKey;
 import com.oracle.svm.core.option.RuntimeOptionParser;
 import com.oracle.svm.core.option.RuntimeOptionValues;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.graal.isolated.IsolatedGraalUtils;
 import com.oracle.svm.graal.meta.RuntimeCodeInstaller;
 import com.oracle.svm.graal.meta.SubstrateInstalledCodeImpl;
 import com.oracle.svm.graal.meta.SubstrateMethod;
-import com.oracle.svm.util.GraalAccess;
+import com.oracle.svm.shared.option.CommonOptionParser;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAccess;
 
 import jdk.graal.compiler.code.CompilationResult;
 import jdk.graal.compiler.core.CompilationWatchDog;
@@ -100,7 +100,7 @@ public class SubstrateGraalUtils {
             return IsolatedGraalUtils.compileInNewIsolateAndInstall(method, installedCodeFactory);
         }
         RuntimeConfiguration runtimeConfiguration = RuntimeCompilationSupport.getRuntimeConfig();
-        DebugContext debug = new DebugContext.Builder(RuntimeOptionValues.singleton(), new GraalDebugHandlersFactory(runtimeConfiguration.getProviders().getSnippetReflection())).build();
+        DebugContext debug = new DebugContext.Builder(RuntimeOptionValues.singleton().get(), new GraalDebugHandlersFactory(runtimeConfiguration.getProviders().getSnippetReflection())).build();
         SubstrateInstalledCode installedCode = installedCodeFactory.createSubstrateInstalledCode();
         CompilationResult compilationResult = doCompile(debug, RuntimeCompilationSupport.getRuntimeConfig(), RuntimeCompilationSupport.getLIRSuites(), method);
         RuntimeCodeInstaller.install(method, compilationResult, installedCode);
@@ -270,7 +270,7 @@ public class SubstrateGraalUtils {
         JavaConstant hostedConstant = heapConstant.getHostedObject();
         VMError.guarantee(hostedConstant.getJavaKind().isObject() && !hostedConstant.isDefaultForKind() && !(hostedConstant instanceof ImageHeapConstant),
                         "Expected to find host object JavaConstant, found %s", hostedConstant);
-        Object hostedObject = GraalAccess.getOriginalSnippetReflection().asObject(Object.class, hostedConstant);
+        Object hostedObject = GuestAccess.get().getSnippetReflection().asObject(Object.class, hostedConstant);
         return SubstrateObjectConstant.forObject(hostedObject, constantReflection.identityHashCode(heapConstant));
     }
 
@@ -282,7 +282,7 @@ public class SubstrateGraalUtils {
      */
     public static JavaConstant runtimeToHosted(JavaConstant constant, ImageHeapScanner scanner) {
         if (constant instanceof SubstrateObjectConstant) {
-            JavaConstant hostedConstant = GraalAccess.getOriginalSnippetReflection().forObject(SubstrateObjectConstant.asObject(constant));
+            JavaConstant hostedConstant = GuestAccess.get().getSnippetReflection().forObject(SubstrateObjectConstant.asObject(constant));
             return scanner.getImageHeapConstant(hostedConstant);
         }
         return constant;

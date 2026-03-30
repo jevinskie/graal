@@ -19,7 +19,6 @@
   // mx gate build config
   local mxgate(tags) = os_arch_jdk_mixin + sg.mxgate(tags, suite="substratevm", suite_short="svm") + task_spec(common.deps.svm),
 
-  local eclipse = task_spec(common.deps.eclipse),
   local spotbugs = task_spec(common.deps.spotbugs),
   local jdt = task_spec(common.deps.jdt),
   local gate = sg.gate,
@@ -60,6 +59,11 @@
     environment+: {
       MX_BUILD_EXPLODED: "true", # test native-image MX_BUILD_EXPLODED compatibility
     },
+  }),
+
+  local terminus = task_spec({
+    mxgate_dy+: ["/espresso-compiler-stub"],
+    mxgate_extra_args+: ["-B=--targets=GRAALVM"],
   }),
 
   // JDKs
@@ -123,7 +127,10 @@
 
   // START MAIN BUILD DEFINITION
   local task_dict = {
-    "style-fullbuild": mxgate("fullbuild,style,nativeimagehelp,check_libcontainer_annotations,check_libcontainer_namespace") + eclipse + jdt + spotbugs + maven + mx_build_exploded + gdb("14.2") + platform_spec(no_jobs) + platform_spec({
+    "style-fullbuild": mxgate("fullbuild,style,nativeimagehelp,check_libcontainer_annotations,check_libcontainer_namespace") + jdt + spotbugs + maven + mx_build_exploded + gdb("14.2") + platform_spec(no_jobs) + platform_spec({
+      "linux:amd64:jdk-latest": tier1 + t("30:00"),
+    }),
+    "terminus": mxgate("build,terminus") + terminus + platform_spec(no_jobs) + platform_spec({
       "linux:amd64:jdk-latest": tier1 + t("30:00"),
     }),
     "basics": mxgate("build,helloworld,native_unittests,standalone_pointsto_unittests,truffle_unittests,debuginfotest,hellomodule,java_agent,condconfig") + maven + jsonschema + platform_spec(no_jobs) + platform_spec({

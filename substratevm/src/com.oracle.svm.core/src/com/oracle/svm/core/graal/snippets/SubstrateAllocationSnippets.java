@@ -39,6 +39,8 @@ import java.util.Map;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.BarrieredAccess;
+import org.graalvm.word.impl.ObjectAccess;
 import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.configure.ConfigurationFile;
@@ -63,13 +65,16 @@ import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.identityhashcode.IdentityHashCodeSupport;
 import com.oracle.svm.core.meta.SharedType;
 import com.oracle.svm.core.metadata.MetadataTracer;
-import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.core.reflect.MissingReflectionRegistrationUtils;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.snippets.SnippetRuntime.SubstrateForeignCallDescriptor;
 import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
 import com.oracle.svm.core.thread.ContinuationSupport;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.JVMCIReflectionUtil;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
@@ -115,12 +120,11 @@ import jdk.graal.compiler.replacements.SnippetCounter;
 import jdk.graal.compiler.replacements.SnippetTemplate;
 import jdk.graal.compiler.replacements.SnippetTemplate.Arguments;
 import jdk.graal.compiler.replacements.SnippetTemplate.SnippetInfo;
-import org.graalvm.word.impl.BarrieredAccess;
-import org.graalvm.word.impl.ObjectAccess;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class SubstrateAllocationSnippets extends AllocationSnippets {
     public static final LocationIdentity TLAB_START_IDENTITY = NamedLocationIdentity.mutable("TLAB.start");
     public static final LocationIdentity TLAB_TOP_IDENTITY = NamedLocationIdentity.mutable("TLAB.top");
@@ -384,7 +388,6 @@ public class SubstrateAllocationSnippets extends AllocationSnippets {
             throw new InstantiationException("Cannot allocate objects of special hybrid types: " + DynamicHub.toClass(hub).getTypeName());
         } else {
             if (hub.canUnsafeInstantiateAsInstanceSlowPath()) {
-                hub.setCanUnsafeAllocate();
                 return hub;
             } else {
                 if (MissingRegistrationUtils.throwMissingRegistrationErrors()) {
@@ -528,7 +531,7 @@ public class SubstrateAllocationSnippets extends AllocationSnippets {
     @Fold
     @Override
     protected int getMinimalBulkZeroingSize() {
-        return GraalOptions.MinimalBulkZeroingSize.getValue(HostedOptionValues.singleton());
+        return GraalOptions.MinimalBulkZeroingSize.getValue(HostedOptionValues.singleton().get());
     }
 
     @Override

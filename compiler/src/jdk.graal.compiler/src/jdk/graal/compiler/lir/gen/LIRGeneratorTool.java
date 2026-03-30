@@ -198,7 +198,7 @@ public interface LIRGeneratorTool extends CoreProviders, DiagnosticLIRGeneratorT
             AllocatableValue operand = cc.getArgument(i);
             if (operand instanceof RegisterValue registerValue) {
                 emitMove(registerValue, additionalReturnResult);
-                if (returnResult.equals(additionalReturnResult)) {
+                if (returnResult.equals(additionalReturnResult) || registerValue.equals(cc.getReturn())) {
                     // The calling convention uses the same register for both default return result
                     // and this additional return result. Use the copy stored in this register to
                     // avoid redundant move.
@@ -568,6 +568,11 @@ public interface LIRGeneratorTool extends CoreProviders, DiagnosticLIRGeneratorT
         throw GraalError.unimplemented("String.indexOf substitution is not implemented on this architecture"); // ExcludeFromJacocoGeneratedReport
     }
 
+    @SuppressWarnings("unused")
+    default Variable emitIndexOfZero(Stride stride, EnumSet<?> runtimeCheckedCPUFeatures, Value arrayPointer) {
+        throw GraalError.unimplemented("ArrayUtils.indexOfZero substitution is not implemented on this architecture"); // ExcludeFromJacocoGeneratedReport
+    }
+
     /*
      * The routines emitStringLatin1Inflate/3 and emitStringUTF16Compress/3 models a simplified
      * version of
@@ -610,6 +615,16 @@ public interface LIRGeneratorTool extends CoreProviders, DiagnosticLIRGeneratorT
     }
 
     @SuppressWarnings("unused")
+    default void emitBase64EncodeBlock(EnumSet<?> runtimeCheckedCPUFeatures, Value src, Value sp, Value sl, Value dst, Value dp, Value isURLFlag) {
+        throw GraalError.unimplemented("No specialized implementation available"); // ExcludeFromJacocoGeneratedReport
+    }
+
+    @SuppressWarnings("unused")
+    default Variable emitBase64DecodeBlock(EnumSet<?> runtimeCheckedCPUFeatures, Value src, Value sp, Value sl, Value dst, Value dp, Value isURLFlag, Value isMimeFlag) {
+        throw GraalError.unimplemented("No specialized implementation available"); // ExcludeFromJacocoGeneratedReport
+    }
+
+    @SuppressWarnings("unused")
     default void emitAESEncrypt(Value from, Value to, Value key) {
         throw GraalError.unimplemented("No specialized implementation available"); // ExcludeFromJacocoGeneratedReport
     }
@@ -635,7 +650,7 @@ public interface LIRGeneratorTool extends CoreProviders, DiagnosticLIRGeneratorT
     }
 
     @SuppressWarnings("unused")
-    default void emitGHASHProcessBlocks(Value state, Value hashSubkey, Value data, Value blocks) {
+    default void emitGHASHProcessBlocks(EnumSet<?> runtimeCheckedCPUFeatures, Value state, Value hashSubkey, Value data, Value blocks) {
         throw GraalError.unimplemented("No specialized implementation available"); // ExcludeFromJacocoGeneratedReport
     }
 
@@ -655,12 +670,12 @@ public interface LIRGeneratorTool extends CoreProviders, DiagnosticLIRGeneratorT
     }
 
     @SuppressWarnings("unused")
-    default void emitSha1ImplCompress(Value buf, Value state) {
+    default void emitSha1ImplCompress(EnumSet<?> runtimeCheckedCPUFeatures, Value buf, Value state) {
         throw GraalError.unimplemented("No specialized implementation available");
     }
 
     @SuppressWarnings("unused")
-    default void emitSha256ImplCompress(Value buf, Value state) {
+    default void emitSha256ImplCompress(EnumSet<?> runtimeCheckedCPUFeatures, Value buf, Value state) {
         throw GraalError.unimplemented("No specialized implementation available");
     }
 

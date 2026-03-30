@@ -26,15 +26,19 @@ package com.oracle.svm.interpreter.ristretto.meta;
 
 import com.oracle.svm.graal.meta.SubstrateConstantReflectionProvider;
 import com.oracle.svm.graal.meta.SubstrateMetaAccess;
+import com.oracle.svm.graal.meta.SubstrateType;
 import com.oracle.svm.interpreter.InterpreterToVM;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaField;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaType;
+import com.oracle.svm.interpreter.ristretto.RistrettoUtils;
 
 import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
 import jdk.graal.compiler.debug.GraalError;
+import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaField;
+import jdk.vm.ci.meta.ResolvedJavaType;
 
 /**
  * Ristretto-specific constant reflection provider that enables runtime access to Crema fields. For
@@ -52,8 +56,17 @@ public class RistrettoConstantReflectionProvider extends SubstrateConstantReflec
     }
 
     @Override
+    public ResolvedJavaType asJavaType(Constant constant) {
+        SubstrateType sType = (SubstrateType) super.asJavaType(constant);
+        if (sType == null) {
+            return null;
+        }
+        return RistrettoType.getOrCreate((InterpreterResolvedJavaType) sType.getHub().getInterpreterType());
+    }
+
+    @Override
     public JavaConstant readFieldValue(ResolvedJavaField field, JavaConstant receiver) {
-        if (field instanceof RistrettoField rField) {
+        if (field instanceof RistrettoField rField && RistrettoUtils.isRuntimeLoaded(rField.getDeclaringClass())) {
             final InterpreterResolvedJavaField iField = rField.getInterpreterField();
             Object baseObject;
             final InterpreterResolvedJavaType declaringClass = iField.getDeclaringClass();

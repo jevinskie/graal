@@ -82,6 +82,7 @@ meth public static void ensureVirtualized(java.lang.Object)
 meth public static void ensureVirtualizedHere(java.lang.Object)
 meth public static void interpreterOnly(java.lang.Runnable)
 meth public static void materialize(java.lang.Object)
+meth public static void preserveFrameStateHere()
 meth public static void transferToInterpreter()
 meth public static void transferToInterpreterAndInvalidate()
 supr java.lang.Object
@@ -277,7 +278,7 @@ meth public java.util.List<java.lang.String> readResourceLines(java.nio.file.Pat
 meth public void unpackResourceFiles(java.nio.file.Path,java.nio.file.Path,java.nio.file.Path) throws java.io.IOException
 meth public void unpackResourceFiles(java.nio.file.Path,java.nio.file.Path,java.nio.file.Path,java.util.function.Predicate<java.nio.file.Path>) throws java.io.IOException
 supr java.lang.Object
-hfds contextPreinitializationCheck,owner,resourceClass
+hfds contextPreinitializationCheck,forNativeImageBuild,owner,resourceClass
 
 CLSS public abstract interface static !annotation com.oracle.truffle.api.InternalResource$Id
  outer com.oracle.truffle.api.InternalResource
@@ -915,7 +916,7 @@ meth public static com.oracle.truffle.api.TruffleStackTrace fillIn(java.lang.Thr
 meth public static java.util.List<com.oracle.truffle.api.TruffleStackTraceElement> getAsynchronousStackTrace(com.oracle.truffle.api.CallTarget,com.oracle.truffle.api.frame.Frame)
 meth public static java.util.List<com.oracle.truffle.api.TruffleStackTraceElement> getStackTrace(java.lang.Throwable)
 supr java.lang.Exception
-hfds EMPTY,frames,lazyFrames,materializedHostException
+hfds EMPTY,frames,lazyFrames,materializedHostException,originatedInHostLanguage
 hcls LazyStackTrace,TracebackElement
 
 CLSS public final com.oracle.truffle.api.TruffleStackTraceElement
@@ -1066,8 +1067,43 @@ meth public abstract void setFloat(com.oracle.truffle.api.frame.Frame,int,float)
 meth public abstract void setInt(com.oracle.truffle.api.frame.Frame,int,int)
 meth public abstract void setLong(com.oracle.truffle.api.frame.Frame,int,long)
 meth public abstract void setObject(com.oracle.truffle.api.frame.Frame,int,java.lang.Object)
+meth public boolean expectBoolean(com.oracle.truffle.api.frame.Frame,long) throws com.oracle.truffle.api.nodes.UnexpectedResultException
+meth public byte expectByte(com.oracle.truffle.api.frame.Frame,long) throws com.oracle.truffle.api.nodes.UnexpectedResultException
+meth public byte getTag(com.oracle.truffle.api.frame.Frame,int)
+meth public byte getTag(com.oracle.truffle.api.frame.Frame,long)
+meth public double expectDouble(com.oracle.truffle.api.frame.Frame,long) throws com.oracle.truffle.api.nodes.UnexpectedResultException
 meth public final java.lang.Object getValue(com.oracle.truffle.api.frame.Frame,int)
 meth public final java.lang.Object requireObject(com.oracle.truffle.api.frame.Frame,int)
+meth public final void setBooleanOrObject(com.oracle.truffle.api.frame.Frame,int,java.lang.Object)
+meth public final void setByteOrObject(com.oracle.truffle.api.frame.Frame,int,java.lang.Object)
+meth public final void setDoubleOrObject(com.oracle.truffle.api.frame.Frame,int,java.lang.Object)
+meth public final void setFloatOrObject(com.oracle.truffle.api.frame.Frame,int,java.lang.Object)
+meth public final void setIntOrObject(com.oracle.truffle.api.frame.Frame,int,java.lang.Object)
+meth public final void setLongOrObject(com.oracle.truffle.api.frame.Frame,int,java.lang.Object)
+meth public float expectFloat(com.oracle.truffle.api.frame.Frame,long) throws com.oracle.truffle.api.nodes.UnexpectedResultException
+meth public int expectInt(com.oracle.truffle.api.frame.Frame,long) throws com.oracle.truffle.api.nodes.UnexpectedResultException
+meth public java.lang.Object expectObject(com.oracle.truffle.api.frame.Frame,long) throws com.oracle.truffle.api.nodes.UnexpectedResultException
+meth public java.lang.Object getObject(com.oracle.truffle.api.frame.Frame,long)
+meth public java.lang.Object getValue(com.oracle.truffle.api.frame.Frame,long)
+meth public java.lang.Object requireObject(com.oracle.truffle.api.frame.Frame,long)
+meth public java.lang.Object uncheckedGetObject(com.oracle.truffle.api.frame.Frame,long)
+meth public long expectLong(com.oracle.truffle.api.frame.Frame,long) throws com.oracle.truffle.api.nodes.UnexpectedResultException
+meth public void clear(com.oracle.truffle.api.frame.Frame,long)
+meth public void copy(com.oracle.truffle.api.frame.Frame,long,long)
+meth public void copyTo(com.oracle.truffle.api.frame.Frame,long,com.oracle.truffle.api.frame.Frame,long,long)
+meth public void setBoolean(com.oracle.truffle.api.frame.Frame,long,boolean)
+meth public void setBooleanOrObject(com.oracle.truffle.api.frame.Frame,long,java.lang.Object)
+meth public void setByte(com.oracle.truffle.api.frame.Frame,long,byte)
+meth public void setByteOrObject(com.oracle.truffle.api.frame.Frame,long,java.lang.Object)
+meth public void setDouble(com.oracle.truffle.api.frame.Frame,long,double)
+meth public void setDoubleOrObject(com.oracle.truffle.api.frame.Frame,long,java.lang.Object)
+meth public void setFloat(com.oracle.truffle.api.frame.Frame,long,float)
+meth public void setFloatOrObject(com.oracle.truffle.api.frame.Frame,long,java.lang.Object)
+meth public void setInt(com.oracle.truffle.api.frame.Frame,long,int)
+meth public void setIntOrObject(com.oracle.truffle.api.frame.Frame,long,java.lang.Object)
+meth public void setLong(com.oracle.truffle.api.frame.Frame,long,long)
+meth public void setLongOrObject(com.oracle.truffle.api.frame.Frame,long,java.lang.Object)
+meth public void setObject(com.oracle.truffle.api.frame.Frame,long,java.lang.Object)
 supr java.lang.Object
 
 CLSS public abstract interface com.oracle.truffle.api.frame.FrameInstance

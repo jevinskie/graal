@@ -41,17 +41,20 @@ import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.svm.core.StaticFieldsSupport;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.jdk.VarHandleSupport;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.FeatureImpl.BeforeCompilationAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedUniverse;
-import com.oracle.svm.util.GraalAccess;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.graal.compiler.nodes.spi.CoreProviders;
 import jdk.internal.vm.annotation.Stable;
@@ -98,8 +101,10 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  * shift.
  */
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class VarHandleFeature implements InternalFeature {
 
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
     class VarHandleSupportImpl extends VarHandleSupport {
         @Override
         protected ResolvedJavaField findVarHandleField(CoreProviders providers, JavaConstant varHandleConstant, boolean guaranteeUnsafeAccessed) {
@@ -436,8 +441,8 @@ final class StaticVarHandleInfo extends VarHandleInfo {
         long offset = offsetGetter.applyAsLong(varHandle);
         Object base = baseGetter.apply(varHandle);
         JavaKind kind = kindGetter.apply(varHandle);
-        JavaConstant baseHandle = GraalAccess.getOriginalProviders().getSnippetReflection().forObject(base);
-        ResolvedJavaField result = GraalAccess.getOriginalProviders().getMetaAccessExtensionProvider().getStaticFieldForAccess(baseHandle, offset, kind);
+        JavaConstant baseHandle = GuestAccess.get().getProviders().getSnippetReflection().forObject(base);
+        ResolvedJavaField result = GuestAccess.get().getProviders().getMetaAccessExtensionProvider().getStaticFieldForAccess(baseHandle, offset, kind);
         if (result == null) {
             throw VMError.shouldNotReachHere("Could not find static field referenced in VarHandle: base = " + base + ", offset = " + offset + ", kind = " + kind);
         }
@@ -457,7 +462,7 @@ final class InstanceVarHandleInfo extends VarHandleInfo {
     ResolvedJavaField findOriginalField(Object varHandle) {
         long offset = offsetGetter.applyAsLong(varHandle);
         Class<?> clazz = typeGetter.apply(varHandle);
-        ResolvedJavaType type = GraalAccess.getOriginalProviders().getMetaAccess().lookupJavaType(clazz);
+        ResolvedJavaType type = GuestAccess.get().getProviders().getMetaAccess().lookupJavaType(clazz);
         JavaKind kind = kindGetter.apply(varHandle);
         ResolvedJavaField result = type.findInstanceFieldWithOffset(offset, kind);
         if (result == null) {

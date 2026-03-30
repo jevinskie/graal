@@ -2461,10 +2461,10 @@ public final class JniEnv extends NativeEnv {
             Method m;
             if (method.isConstructor()) {
                 assert InterpreterToVM.instanceOf(declMethod, getMeta().java_lang_reflect_Constructor);
-                m = (Method) getMeta().HIDDEN_CONSTRUCTOR_KEY.getHiddenObject(declMethod);
+                m = (Method) getMeta().java_lang_reflect_Constructor_0vmMethod.getHiddenObject(declMethod);
             } else {
                 assert InterpreterToVM.instanceOf(declMethod, getMeta().java_lang_reflect_Method);
-                m = (Method) getMeta().HIDDEN_METHOD_KEY.getHiddenObject(declMethod);
+                m = (Method) getMeta().java_lang_reflect_Method_0vmMethod.getHiddenObject(declMethod);
             }
             if (method == m) {
                 return declMethod;
@@ -2492,7 +2492,7 @@ public final class JniEnv extends NativeEnv {
         StaticObject fields = getVM().JVM_GetClassDeclaredFields(field.getDeclaringKlass().mirror(), false);
         for (StaticObject declField : fields.<StaticObject[]> unwrap(language)) {
             assert InterpreterToVM.instanceOf(declField, getMeta().java_lang_reflect_Field);
-            Field f = (Field) getMeta().HIDDEN_FIELD_KEY.getHiddenObject(declField);
+            Field f = (Field) getMeta().java_lang_reflect_Field_0vmField.getHiddenObject(declField);
             if (field == f) {
                 return declField;
             }
@@ -2510,7 +2510,7 @@ public final class JniEnv extends NativeEnv {
     @JniImpl
     public @Handle(Field.class) long FromReflectedField(@JavaType(java.lang.reflect.Field.class) StaticObject field) {
         assert InterpreterToVM.instanceOf(field, getMeta().java_lang_reflect_Field);
-        Field guestField = Field.getReflectiveFieldRoot(field, getMeta());
+        Field guestField = Field.getVMField(field, getMeta());
         guestField.getDeclaringKlass().initialize();
         return fieldIds().handlify(guestField);
     }
@@ -2525,9 +2525,9 @@ public final class JniEnv extends NativeEnv {
         assert InterpreterToVM.instanceOf(method, getMeta().java_lang_reflect_Method) || InterpreterToVM.instanceOf(method, getMeta().java_lang_reflect_Constructor);
         Method guestMethod;
         if (InterpreterToVM.instanceOf(method, getMeta().java_lang_reflect_Method)) {
-            guestMethod = Method.getHostReflectiveMethodRoot(method, getMeta());
+            guestMethod = Method.getVMMethod(method, getMeta());
         } else if (InterpreterToVM.instanceOf(method, getMeta().java_lang_reflect_Constructor)) {
-            guestMethod = Method.getHostReflectiveConstructorRoot(method, getMeta());
+            guestMethod = Method.getVMMethodForConstructor(method, getMeta());
         } else {
             CompilerDirectives.transferToInterpreterAndInvalidate();
             throw EspressoError.shouldNotReachHere();
@@ -2999,7 +2999,7 @@ public final class JniEnv extends NativeEnv {
             throw e;
         }
 
-        meta.HIDDEN_PROTECTION_DOMAIN.setMaybeHiddenObject(guestClass, protectionDomain);
+        meta.java_lang_Class_0protectedDomain.setMaybeHiddenObject(guestClass, protectionDomain);
         // FindClass should initialize the class.
         guestClass.getMirrorKlass(meta).safeInitialize();
 

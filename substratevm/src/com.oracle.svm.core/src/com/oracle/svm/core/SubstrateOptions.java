@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,6 +27,7 @@ package com.oracle.svm.core;
 import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.Immutable;
 import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RegisterForIsolateArgumentParser;
 import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RelevantForCompilationIsolates;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static jdk.graal.compiler.core.common.SpectrePHTMitigations.None;
 import static jdk.graal.compiler.core.common.SpectrePHTMitigations.Options.SpectrePHTBarriers;
 import static jdk.graal.compiler.options.OptionType.Expert;
@@ -41,7 +42,6 @@ import java.util.UUID;
 import java.util.function.Predicate;
 
 import org.graalvm.collections.EconomicMap;
-import org.graalvm.collections.UnmodifiableEconomicMap;
 import org.graalvm.nativeimage.ImageInfo;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
@@ -57,30 +57,33 @@ import com.oracle.svm.core.heap.ReferenceHandler;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.jdk.VectorAPIEnabled;
-import com.oracle.svm.core.option.APIOption;
-import com.oracle.svm.core.option.APIOptionGroup;
-import com.oracle.svm.core.option.AccumulatingLocatableMultiOptionValue;
-import com.oracle.svm.core.option.BundleMember;
 import com.oracle.svm.core.option.GCOptionValue;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.option.LayerVerifiedOption;
-import com.oracle.svm.core.option.LayerVerifiedOption.Kind;
-import com.oracle.svm.core.option.LayerVerifiedOption.Severity;
-import com.oracle.svm.core.option.OptionMigrationMessage;
-import com.oracle.svm.core.option.ReplacingLocatableMultiOptionValue;
 import com.oracle.svm.core.option.RuntimeOptionKey;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.pltgot.PLTGOTConfiguration;
 import com.oracle.svm.core.thread.VMOperationControl;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.core.util.TimeUtils;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.SubstrateGuestOptions;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.option.APIOption;
+import com.oracle.svm.shared.option.APIOptionGroup;
+import com.oracle.svm.shared.option.AccumulatingLocatableMultiOptionValue;
+import com.oracle.svm.shared.option.BundleMember;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.LayerVerifiedOption;
+import com.oracle.svm.shared.option.LayerVerifiedOption.Kind;
+import com.oracle.svm.shared.option.LayerVerifiedOption.Severity;
+import com.oracle.svm.shared.option.OptionMigrationMessage;
+import com.oracle.svm.shared.option.ReplacingLocatableMultiOptionValue;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.JVMCIReflectionUtil;
-import com.oracle.svm.util.LogUtils;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.asm.amd64.AMD64Assembler;
@@ -94,6 +97,7 @@ import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.common.DeadCodeEliminationPhase;
 import jdk.internal.misc.Unsafe;
 import jdk.vm.ci.amd64.AMD64;
+import jdk.vm.ci.code.CodeUtil;
 
 public class SubstrateOptions {
 
@@ -149,18 +153,13 @@ public class SubstrateOptions {
     @Option(help = "Selects the libc implementation to use. Available implementations: glibc, musl, bionic")//
     public static final HostedOptionKey<String> UseLibC = new HostedOptionKey<>(null) {
         @Override
-        public String getValueOrDefault(UnmodifiableEconomicMap<OptionKey<?>, Object> values) {
-            if (!values.containsKey(this)) {
+        public String getValue(OptionValues values) {
+            if (!hasBeenSet(values)) {
                 return Platform.includedIn(Platform.ANDROID.class)
                                 ? "bionic"
                                 : System.getProperty("substratevm.HostLibC", "glibc");
             }
-            return (String) values.get(this);
-        }
-
-        @Override
-        public String getValue(OptionValues values) {
-            return getValueOrDefault(values.getMap());
+            return super.getValue(values);
         }
     };
 
@@ -436,12 +435,12 @@ public class SubstrateOptions {
 
     @Fold
     public static boolean useEconomyCompilerConfig() {
-        return useEconomyCompilerConfig(HostedOptionValues.singleton());
+        return useEconomyCompilerConfig(HostedOptionValues.singleton().get());
     }
 
     @Fold
     public static boolean useCodeSizeCompilerConfig() {
-        return useCodeSizeCompilerConfig(HostedOptionValues.singleton());
+        return useCodeSizeCompilerConfig(HostedOptionValues.singleton().get());
     }
 
     @Fold
@@ -506,7 +505,7 @@ public class SubstrateOptions {
 
     @Platforms(HOSTED_ONLY.class)
     public static Path getImagePath() {
-        return getImagePath(HostedOptionValues.singleton());
+        return getImagePath(HostedOptionValues.singleton().get());
     }
 
     public static final class GCGroup implements APIOptionGroup {
@@ -876,9 +875,6 @@ public class SubstrateOptions {
     @Option(help = "Parse and consume standard options and system properties from the command line arguments when the VM is created.", stability = OptionStability.STABLE)//
     public static final HostedOptionKey<Boolean> ParseRuntimeOptions = new HostedOptionKey<>(true);
 
-    @Option(help = "Initialize the VM and run startup hooks.")//
-    public static final HostedOptionKey<Boolean> InitializeVM = new HostedOptionKey<>(true);
-
     @Option(help = "Enable wildcard expansion in command line arguments on Windows.")//
     public static final HostedOptionKey<Boolean> EnableWildcardExpansion = new HostedOptionKey<>(true);
 
@@ -1143,16 +1139,11 @@ public class SubstrateOptions {
     @Option(help = "Provide java.lang.Terminator exit handlers. Default value is true for executables and false for shared libraries because this option installs signal handlers.", type = Expert, stability = OptionStability.EXPERIMENTAL)//
     protected static final HostedOptionKey<Boolean> InstallExitHandlers = new HostedOptionKey<>(null) {
         @Override
-        public Boolean getValueOrDefault(UnmodifiableEconomicMap<OptionKey<?>, Object> values) {
-            if (values.containsKey(this)) {
-                return (Boolean) values.get(this);
-            }
-            return isExecutableHelper();
-        }
-
-        @Override
         public Boolean getValue(OptionValues values) {
-            return getValueOrDefault(values.getMap());
+            if (!hasBeenSet(values)) {
+                return isExecutableHelper();
+            }
+            return super.getValue(values);
         }
     };
 
@@ -1185,16 +1176,11 @@ public class SubstrateOptions {
         @Option(help = "Support runtime compilation in separate isolates (enable at runtime with option CompileInIsolates).") //
         public static final HostedOptionKey<Boolean> SupportCompileInIsolates = new HostedOptionKey<>(null) {
             @Override
-            public Boolean getValueOrDefault(UnmodifiableEconomicMap<OptionKey<?>, Object> values) {
-                if (!values.containsKey(this)) {
-                    return SpawnIsolates.getValueOrDefault(values);
-                }
-                return super.getValueOrDefault(values);
-            }
-
-            @Override
             public Boolean getValue(OptionValues values) {
-                return getValueOrDefault(values.getMap());
+                if (hasBeenSet(values)) {
+                    return super.getValue(values);
+                }
+                return SpawnIsolates.getValue(values);
             }
         };
 
@@ -1226,7 +1212,7 @@ public class SubstrateOptions {
         /** Use {@link SubstrateOptions#getPageSize()} instead. */
         @LayerVerifiedOption(kind = Kind.Changed, severity = Severity.Error)//
         @Option(help = "The largest page size of machines that can run the image. The default of 0 automatically selects a typically suitable value.")//
-        protected static final HostedOptionKey<Integer> PageSize = new HostedOptionKey<>(0);
+        protected static final HostedOptionKey<Integer> PageSize = new HostedOptionKey<>(0, SubstrateOptions::validatePageSize);
 
         @Option(help = "Physical memory size (in bytes). By default, the value is queried from the OS/container during VM startup.", type = OptionType.Expert)//
         public static final RuntimeOptionKey<Long> MaxRAM = new RuntimeOptionKey<>(0L, RegisterForIsolateArgumentParser);
@@ -1280,17 +1266,45 @@ public class SubstrateOptions {
 
         /** Use {@link SubstrateOptions#isSignalHandlingAllowed()} instead. */
         @Option(help = "Enables signal handling", stability = OptionStability.EXPERIMENTAL, type = Expert)//
-        public static final RuntimeOptionKey<Boolean> EnableSignalHandling = new RuntimeOptionKey<>(null, Immutable);
+        public static final RuntimeOptionKey<Boolean> EnableSignalHandling = new RuntimeOptionKey<>(null, RegisterForIsolateArgumentParser) {
+            @Override
+            protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Boolean oldValue, Boolean newValue) {
+                if (!SubstrateUtil.HOSTED && !SubstrateGuestOptions.installSignalHandlersEarly()) {
+                    /*
+                     * If signal handlers are not installed during early VM startup, then it is fine
+                     * if this option value changes after early startup. We need to copy the new
+                     * value to the isolate argument parser though to ensure that the values there
+                     * are up-to-date as well.
+                     */
+                    int optionIndex = IsolateArgumentParser.getOptionIndex(EnableSignalHandling);
+                    IsolateArgumentParser.singleton().setBooleanOptionValue(optionIndex, newValue);
+                }
+                super.onValueUpdate(values, oldValue, newValue);
+            }
+        };
 
         /** Use {@link SubstrateOptions#useRistretto()} instead. */
         @Option(help = "Prepare native image to compile bytecodes at runtime.")//
-        public static final HostedOptionKey<Boolean> GraalJITCompileAtRuntime = new HostedOptionKey<>(false, actualValue -> {
+        public static final HostedOptionKey<Boolean> GraalJITCompileAtRuntime = new HostedOptionKey<>(false, ConcealedOptions::validateGraalJITCompileAtRuntime) {
+            @Override
+            protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Boolean oldValue, Boolean newValue) {
+                super.onValueUpdate(values, oldValue, newValue);
+                if (newValue) {
+                    SupportCompileInIsolates.update(values, false);
+                }
+            }
+        };
+
+        private static void validateGraalJITCompileAtRuntime(HostedOptionKey<Boolean> actualValue) {
             if (actualValue.getValue()) {
                 if (!RuntimeClassLoading.Options.RuntimeClassLoading.getValue()) {
                     throw UserError.abort("Cannot enable Ristretto compilation if RuntimeClassLoading is not enabled.");
                 }
+                if (SupportCompileInIsolates.getValue()) {
+                    throw UserError.abort("Cannot enable Ristretto compilation if SupportCompileInIsolates is enabled.");
+                }
             }
-        });
+        }
     }
 
     @Option(help = "Overwrites the available number of processors provided by the OS. Any value <= 0 means using the processor count from the OS.")//
@@ -1350,6 +1364,12 @@ public class SubstrateOptions {
         }
     }
 
+    /**
+     * Minimum runtime page size for AMD64IndexOfZeroOp and AArch64IndexOfZeroOp. If we ever target
+     * a system with a smaller page size, this would need to be configurable.
+     */
+    public static final int MINIMUM_PAGE_SIZE = 4096;
+
     @Fold
     public static int getPageSize() {
         int value = ConcealedOptions.PageSize.getValue();
@@ -1360,8 +1380,18 @@ public class SubstrateOptions {
              */
             return Math.max(64 * 1024, Unsafe.getUnsafe().pageSize());
         }
-        assert value > 0 : value;
+        VMError.guarantee(value >= MINIMUM_PAGE_SIZE && CodeUtil.isPowerOf2(value), "page size must be greater or equal to 4KB and a power of 2");
         return value;
+    }
+
+    private static void validatePageSize(HostedOptionKey<Integer> optionKey) {
+        int value = optionKey.getValue();
+        if (value == 0) {
+            return;
+        }
+        if (value < MINIMUM_PAGE_SIZE || !CodeUtil.isPowerOf2(value)) {
+            throw UserError.invalidOptionValue(ConcealedOptions.PageSize, value, "page size must be greater or equal to 4KB and a power of 2");
+        }
     }
 
     @Option(help = "Specifies how many details are printed for certain diagnostic thunks, e.g.: 'DumpThreads:1,DumpRegisters:2'. " +
@@ -1392,6 +1422,9 @@ public class SubstrateOptions {
     @Option(help = "Enable runtime instantiation of reflection objects for non-invoked methods.", type = OptionType.Expert, deprecated = true)//
     public static final HostedOptionKey<Boolean> ConfigureReflectionMetadata = new HostedOptionKey<>(true);
 
+    @Option(help = "Print a list of parsed metadata configuration files.", type = OptionType.Expert)//
+    public static final HostedOptionKey<Boolean> ReportUsedMetadataFiles = new HostedOptionKey<>(false);
+
     @Option(help = "Include a list of methods included in the image for runtime inspection.", type = OptionType.Expert)//
     public static final HostedOptionKey<Boolean> IncludeMethodData = new HostedOptionKey<>(false);
 
@@ -1405,15 +1438,10 @@ public class SubstrateOptions {
     public static final HostedOptionKey<Boolean> RunMainInNewThread = new HostedOptionKey<>(false) {
         @Override
         public Boolean getValue(OptionValues values) {
-            return getValueOrDefault(values.getMap());
-        }
-
-        @Override
-        public Boolean getValueOrDefault(UnmodifiableEconomicMap<OptionKey<?>, Object> values) {
-            if (!values.containsKey(this) && Platform.includedIn(Platform.LINUX.class) && LibCBase.targetLibCIs(MuslLibC.class)) {
+            if (!hasBeenSet(values) && Platform.includedIn(Platform.LINUX.class) && LibCBase.targetLibCIs(MuslLibC.class)) {
                 return true;
             }
-            return (Boolean) values.get(this, this.getDefaultValue());
+            return super.getValue(values);
         }
     };
 
@@ -1552,12 +1580,14 @@ public class SubstrateOptions {
         return InterfaceHashingMaxId.getValue();
     }
 
+    /** By default, signal handling is only allowed for executables. */
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static boolean isSignalHandlingAllowed() {
-        Boolean value = ConcealedOptions.EnableSignalHandling.getValue();
-        if (value != null) {
-            return value;
+        int optionIndex = IsolateArgumentParser.getOptionIndex(ConcealedOptions.EnableSignalHandling);
+        if (IsolateArgumentParser.singleton().isNull(optionIndex)) {
+            return isExecutableHelper();
         }
-        return isExecutableHelper();
+        return IsolateArgumentParser.singleton().getBooleanOptionValue(optionIndex);
     }
 
     /**
@@ -1565,7 +1595,8 @@ public class SubstrateOptions {
      * executable, or a shared library. For this reason, the exit handlers should always be
      * installed in the initial layer and the decision to run it or not is delayed to run time.
      */
-    private static boolean isExecutableHelper() {
+    @Fold
+    static boolean isExecutableHelper() {
         return ImageLayerBuildingSupport.buildingInitialLayer() || ImageInfo.isExecutable();
     }
 
@@ -1695,4 +1726,7 @@ public class SubstrateOptions {
         return ConcealedOptions.GraalJITCompileAtRuntime.getValue();
     }
 
+    @Option(type = Expert, help = "Support for continuations which are used by virtual threads. " +
+                    "If disabled, virtual threads can be started but each of them is backed by a platform thread.") //
+    public static final HostedOptionKey<Boolean> VMContinuations = new HostedOptionKey<>(true);
 }

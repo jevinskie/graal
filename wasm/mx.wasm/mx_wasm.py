@@ -55,13 +55,13 @@ import mx_truffle
 import mx_unittest
 import mx_util
 # noinspection PyUnresolvedReferences
-import mx_wasm_benchmark  # pylint: disable=unused-import
 from mx_gate import Task, add_gate_runner
 from mx_unittest import unittest
 
 # re-export custom mx project classes, so they can be used from suite.py
-from mx_sdk_vm_ng import StandaloneLicenses, ThinLauncherProject, LanguageLibraryProject, DynamicPOMDistribution, DeliverableStandaloneArchive  # pylint: disable=unused-import
 
+import mx_wasm_benchmark  # pylint: disable=unused-import
+from mx_sdk_vm_ng import StandaloneLicenses, ThinLauncherProject, LanguageLibraryProject, DynamicPOMDistribution, DeliverableStandaloneArchive  # pylint: disable=unused-import
 _suite = mx.suite("wasm")
 
 emcc_dir = mx.get_env("EMCC_DIR", None)
@@ -98,15 +98,13 @@ def graalwasm_standalone_deps():
     include_truffle_runtime = not mx.env_var_to_bool("EXCLUDE_TRUFFLE_RUNTIME")
     return mx_truffle.resolve_truffle_dist_names(use_optimized_runtime=include_truffle_runtime)
 
-def libwasmvm_build_args():
+def libwasmvm_dynamic_build_args():
     image_build_args = []
-    if mx_sdk_vm_ng.get_bootstrap_graalvm_jdk_version() < mx.VersionSpec("25"):
+    if mx_sdk_vm_ng.get_bootstrap_graalvm_jdk_version() >= mx.VersionSpec("25"):
         image_build_args.extend([
-            '--exclude-config',
-            r'wasm\.jar',
-            r'META-INF/native-image/org\.graalvm\.wasm/wasm-language/native-image\.properties',
-            '--initialize-at-build-time=org.graalvm.wasm',
-            '-H:MaxRuntimeCompileMethods=2000',
+            '-H:+UnlockExperimentalVMOptions',
+            '-H:+VectorAPISupport',
+            '--add-modules=jdk.incubator.vector',
         ])
     return image_build_args
 
@@ -123,7 +121,7 @@ class GraalWasmDefaultTags:
 
 def mx_register_dynamic_suite_constituents(register_project, register_distribution):
     if register_project and register_distribution:
-        isolate_build_options = []
+        isolate_build_options = libwasmvm_dynamic_build_args()
         meta_pom = [p for p in _suite.dists if p.name == 'WASM_POM'][0]
         mx_truffle.register_polyglot_isolate_distributions(_suite, register_project, register_distribution,'wasm',
                                         'src', meta_pom.name, meta_pom.maven_group_id(), meta_pom.theLicense,
@@ -181,7 +179,7 @@ add_gate_runner(_suite, graal_wasm_gate_runner)
 class WasmUnittestConfig(mx_unittest.MxUnittestConfig):
 
     def __init__(self):
-        super(WasmUnittestConfig, self).__init__('wasm')
+        super().__init__('wasm')
 
     def apply(self, config):
         (vmArgs, mainClass, mainClassArgs) = config
@@ -208,7 +206,7 @@ class WasmUnittestConfig(mx_unittest.MxUnittestConfig):
         super().processDeps(deps)
         truffle_runtime_dist_names = mx_truffle.resolve_truffle_dist_names(use_optimized_runtime=True, use_enterprise=True)
         mx.logv(f"Adding Truffle runtime distributions {', '.join(truffle_runtime_dist_names)} to unittest dependencies.")
-        deps.update((mx.distribution(d) for d in truffle_runtime_dist_names))
+        deps.update(mx.distribution(d) for d in truffle_runtime_dist_names)
 
 
 mx_unittest.register_unittest_config(WasmUnittestConfig())
@@ -271,7 +269,7 @@ class GraalWasmBuildTask(mx.ProjectBuildTask):
         return mx.TimeStampFile.newest(self.subject.getResults())
 
     def needsBuild(self, newestInput):
-        is_needed, reason = super(GraalWasmBuildTask, self).needsBuild(newestInput)
+        is_needed, reason = super().needsBuild(newestInput)
         if is_needed:
             return True, reason
 
@@ -303,7 +301,10 @@ class WatProject(GraalWasmProject):
         output_dir = self.getOutputDir()
         for root, filename in self.getProgramSources():
             subdir = os.path.relpath(root, self.getSourceDir())
-            build_output_name = lambda ext: os.path.join(output_dir, subdir, remove_extension(filename) + ext)
+
+            def build_output_name(ext, file_name=filename, rel_subdir=subdir):
+                return os.path.join(output_dir, rel_subdir, remove_extension(file_name) + ext)
+
             yield build_output_name(".wat")
             yield build_output_name(".wasm")
 
@@ -317,7 +318,7 @@ class WatBuildTask(GraalWasmBuildTask):
         GraalWasmBuildTask.__init__(self, project, args, output_base)
 
     def __str__(self):
-        return 'Building {} with WABT'.format(self.subject.name)
+        return f'Building {self.subject.name} with WABT'
 
     def build(self):
         source_dir = self.subject.getSourceDir()
@@ -406,8 +407,12 @@ class EmscriptenProject(GraalWasmProject):
         for root, filename in self.getProgramSources():
             subdir = os.path.relpath(root, self.getSourceDir())
             subdirs.add(subdir)
-            build_output_name = lambda ext: os.path.join(output_dir, subdir, remove_extension(filename) + ext)
-            native_build_output_name = lambda ext: os.path.join(output_dir, subdir, NATIVE_BENCH_DIR, remove_extension(filename) + ext)
+
+            def build_output_name(ext, file_name=filename, rel_subdir=subdir):
+                return os.path.join(output_dir, rel_subdir, remove_extension(file_name) + ext)
+
+            def native_build_output_name(ext, file_name=filename, rel_subdir=subdir):
+                return os.path.join(output_dir, rel_subdir, NATIVE_BENCH_DIR, remove_extension(file_name) + ext)
 
             result_path = os.path.join(root, remove_extension(filename) + ".result")
             # The result files may be optional in some cases.
@@ -444,7 +449,7 @@ class EmscriptenBuildTask(GraalWasmBuildTask):
         GraalWasmBuildTask.__init__(self, project, args, output_base)
 
     def __str__(self):
-        return 'Building {} with Emscripten'.format(self.subject.name)
+        return f'Building {self.subject.name} with Emscripten'
 
     def benchmark_methods(self):
         return benchmark_methods
@@ -452,7 +457,7 @@ class EmscriptenBuildTask(GraalWasmBuildTask):
     def test_methods(self, opts_path):
         if not os.path.isfile(opts_path):
             return []
-        with open(opts_path) as opts_file:
+        with open(opts_path, encoding='utf-8') as opts_file:
             for line in opts_file:
                 line = line.strip()
                 if line.startswith("entry-point"):
@@ -499,7 +504,7 @@ class EmscriptenBuildTask(GraalWasmBuildTask):
             source_cc_flags = []
             native_bench = True
             if filename.endswith(".c"):
-                with open(source_path) as f:
+                with open(source_path, encoding='utf-8') as f:
                     source_file = f.read()
                     for flags in re.findall(r'//\s*CFLAGS\s*=\s*(.*)\n', source_file):
                         source_cc_flags.extend(flags.split())
@@ -569,7 +574,7 @@ class EmscriptenBuildTask(GraalWasmBuildTask):
             # Remember the source name.
             subdir_program_names[subdir].append(basename)
         for subdir in subdir_program_names:
-            with open(os.path.join(output_dir, subdir, "wasm_test_index"), "w") as f:
+            with open(os.path.join(output_dir, subdir, "wasm_test_index"), "w", encoding='utf-8') as f:
                 for name in subdir_program_names[subdir]:
                     f.write(name)
                     f.write("\n")
@@ -623,7 +628,7 @@ mx_sdk_vm.register_graalvm_component(mx_sdk_vm.GraalVmLanguage(
             launchers=["bin/<exe:wasm>"],
             jar_distributions=["wasm:WASM_LAUNCHER"],
             main_class="org.graalvm.wasm.launcher.WasmLauncher",
-            build_args=[],
+            build_args=libwasmvm_dynamic_build_args(),
             language="wasm",
         ),
     ],
@@ -694,7 +699,7 @@ def emscripten_init(args):
     mx.log("Config file path:    " + str(config_path))
     mx.log("Emscripten SDK path: " + str(emsdk_path))
 
-    with open(config_path, "w") as fp:
+    with open(config_path, "w", encoding='utf-8') as fp:
         fp.write("LLVM_ROOT='" + llvm_root + "'" + os.linesep)
         fp.write("BINARYEN_ROOT='" + binaryen_root + "'" + os.linesep)
         fp.write("EMSCRIPTEN_ROOT='" + emscripten_root + "'" + os.linesep)
@@ -707,7 +712,7 @@ def emscripten_init(args):
 
     temp_dir = tempfile.mkdtemp()
     test_file = os.path.join(temp_dir, "test.c")
-    with open(test_file, "w") as fp:
+    with open(test_file, "w", encoding='utf-8') as fp:
         fp.write("int main() { return 0; }")
     cmd = os.path.join(emscripten_root, "emcc")
 

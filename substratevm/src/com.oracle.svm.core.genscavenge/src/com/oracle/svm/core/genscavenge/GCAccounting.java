@@ -28,8 +28,8 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.UnsignedWord;
 
-import com.oracle.svm.core.AlwaysInline;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.Uninterruptible;
 import org.graalvm.word.impl.Word;
 
 /**
@@ -101,6 +101,10 @@ public final class GCAccounting {
 
     UnsignedWord getAllocatedObjectBytes() {
         return allocatedObjectBytes;
+    }
+
+    UnsignedWord getOldGenerationBeforeChunkBytes() {
+        return oldChunkBytesBefore;
     }
 
     UnsignedWord getOldGenerationAfterChunkBytes() {

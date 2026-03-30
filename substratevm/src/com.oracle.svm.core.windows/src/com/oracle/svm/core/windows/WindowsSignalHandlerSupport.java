@@ -24,6 +24,7 @@
  */
 package com.oracle.svm.core.windows;
 
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static org.graalvm.nativeimage.c.function.CFunction.Transition.NO_TRANSITION;
 
 import java.util.Locale;
@@ -31,20 +32,25 @@ import java.util.Locale;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CFunction;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.Isolates;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.jdk.Jvm;
 import com.oracle.svm.core.jdk.SignalHandlerSupport;
 import com.oracle.svm.core.jdk.Target_jdk_internal_misc_Signal;
 import com.oracle.svm.core.monitor.MonitorSupport;
 import com.oracle.svm.core.thread.PlatformThreads;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.core.windows.headers.WinBase;
-import org.graalvm.word.impl.Word;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 @AutomaticallyRegisteredImageSingleton(SignalHandlerSupport.class)
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public class WindowsSignalHandlerSupport implements SignalHandlerSupport {
     private static final int NEAR_MAX_PRIORITY = Thread.MAX_PRIORITY - 1;
 
@@ -53,6 +59,12 @@ public class WindowsSignalHandlerSupport implements SignalHandlerSupport {
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public WindowsSignalHandlerSupport() {
+    }
+
+    @Override
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public void tryInstallHandlersForIgnoredSignals() {
+        /* On Windows, there are no ignored signals. */
     }
 
     @Override

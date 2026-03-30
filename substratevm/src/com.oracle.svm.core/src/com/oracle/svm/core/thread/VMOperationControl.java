@@ -39,10 +39,9 @@ import com.oracle.svm.core.Isolates;
 import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.SubstrateOptions.ConcealedOptions;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.UnmanagedMemoryUtil;
 import com.oracle.svm.core.collections.RingBuffer;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.heap.VMOperationInfos;
@@ -53,7 +52,13 @@ import com.oracle.svm.core.stack.StackOverflowCheck;
 import com.oracle.svm.core.thread.VMThreads.SafepointBehavior;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
 import com.oracle.svm.core.util.TimeUtils;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 
@@ -88,6 +93,7 @@ import jdk.graal.compiler.api.replacements.Fold;
  * </ul>
  */
 @AutomaticallyRegisteredImageSingleton
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Duplicable.class, other = PartiallyLayerAware.class)
 public final class VMOperationControl {
     private final VMOperationThread dedicatedVMOperationThread;
     private final WorkQueues mainQueues;
@@ -263,16 +269,19 @@ public final class VMOperationControl {
                 // a recursive VM operation (either triggered implicitly or explicitly) -> execute
                 // it right away
                 immediateQueues.enqueueAndExecute(operation, data);
-            } else if (useDedicatedVMOperationThread()) {
-                // a thread queues an operation that the VM operation thread will execute
-                assert !isDedicatedVMOperationThread() : "the dedicated VM operation thread must execute and not queue VM operations";
-                assert dedicatedVMOperationThread.isRunning() : "must not queue VM operations before the VM operation thread is started or after it is shut down";
-                VMThreads.THREAD_MUTEX.guaranteeNotOwner("could result in deadlocks otherwise");
-                mainQueues.enqueueAndWait(operation, data);
             } else {
-                // use the current thread to execute the operation under a lock
-                VMThreads.THREAD_MUTEX.guaranteeNotOwner("could result in deadlocks otherwise");
-                mainQueues.enqueueAndExecute(operation, data);
+                VMError.guarantee(!ThreadsLock.hasAccess(), "could result in deadlocks otherwise");
+                VMThreads.SAFEPOINT_MUTEX.guaranteeNotOwner("could result in deadlocks otherwise");
+
+                if (useDedicatedVMOperationThread()) {
+                    // a thread queues an operation that the VM operation thread will execute
+                    assert !isDedicatedVMOperationThread() : "the dedicated VM operation thread must execute and not queue VM operations";
+                    assert dedicatedVMOperationThread.isRunning() : "must not queue VM operations before the VM operation thread is started or after it is shut down";
+                    mainQueues.enqueueAndWait(operation, data);
+                } else {
+                    // use the current thread to execute the operation under a lock
+                    mainQueues.enqueueAndExecute(operation, data);
+                }
             }
             assert operation.isFinished(data);
             log().string("]").newline();
@@ -420,8 +429,8 @@ public final class VMOperationControl {
             this.javaNonSafepointOperations = new JavaVMOperationQueue(prefix + "JavaNonSafepointOperations");
             this.javaSafepointOperations = new JavaVMOperationQueue(prefix + "JavaSafepointOperations");
             this.mutex = createMutex(prefix + "VMOperationControlWorkQueue", needsLocking);
-            this.operationQueued = createCondition();
-            this.operationFinished = createCondition();
+            this.operationQueued = createCondition("operationQueued");
+            this.operationFinished = createCondition("operationFinished");
         }
 
         @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -532,15 +541,14 @@ public final class VMOperationControl {
 
             // Drain the safepoint queues.
             if (!nativeSafepointOperations.isEmpty() || !javaSafepointOperations.isEmpty()) {
-                String safepointReason = null;
                 boolean startedSafepoint = false;
-                boolean lockedForSafepoint = false;
+                boolean acquiredThreadsLock = false;
 
                 Safepoint safepoint = Safepoint.singleton();
                 if (!safepoint.isInProgress()) {
                     startedSafepoint = true;
-                    safepointReason = getSafepointReason(nativeSafepointOperations, javaSafepointOperations);
-                    lockedForSafepoint = safepoint.startSafepoint(safepointReason);
+                    String safepointReason = getSafepointReason(nativeSafepointOperations, javaSafepointOperations);
+                    acquiredThreadsLock = safepoint.startSafepoint(safepointReason);
                 }
 
                 try {
@@ -548,7 +556,7 @@ public final class VMOperationControl {
                     drain(javaSafepointOperations);
                 } finally {
                     if (startedSafepoint) {
-                        safepoint.endSafepoint(lockedForSafepoint);
+                        safepoint.endSafepoint(acquiredThreadsLock);
                     }
                 }
             }
@@ -662,9 +670,9 @@ public final class VMOperationControl {
         }
 
         @Platforms(value = Platform.HOSTED_ONLY.class)
-        private VMCondition createCondition() {
+        private VMCondition createCondition(String name) {
             if (mutex != null && useDedicatedVMOperationThread()) {
-                return new VMCondition(mutex);
+                return new VMCondition(mutex, name);
             }
             return null;
         }

@@ -72,7 +72,7 @@ import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.graal.pointsto.util.ListUtils;
 import com.oracle.graal.pointsto.util.ListUtils.UnsafeArrayList;
 import com.oracle.graal.pointsto.util.ListUtils.UnsafeArrayListClosable;
-import com.oracle.svm.common.meta.MultiMethod;
+import com.oracle.svm.common.meta.MethodVariant;
 
 import jdk.graal.compiler.options.OptionValues;
 import jdk.vm.ci.code.BytecodePosition;
@@ -324,25 +324,25 @@ public final class BytecodeSensitiveAnalysisPolicy extends AnalysisPolicy {
 
     @Override
     public AbstractVirtualInvokeTypeFlow createVirtualInvokeTypeFlow(BytecodePosition invokeLocation, AnalysisType receiverType, PointsToAnalysisMethod targetMethod,
-                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MultiMethod.MultiMethodKey callerMultiMethodKey) {
-        return new BytecodeSensitiveVirtualInvokeTypeFlow(invokeLocation, receiverType, targetMethod, actualParameters, actualReturn, callerMultiMethodKey);
+                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MethodVariant.MethodVariantKey callerMethodVariantKey) {
+        return new BytecodeSensitiveVirtualInvokeTypeFlow(invokeLocation, receiverType, targetMethod, actualParameters, actualReturn, callerMethodVariantKey);
     }
 
     @Override
     public AbstractSpecialInvokeTypeFlow createSpecialInvokeTypeFlow(BytecodePosition invokeLocation, AnalysisType receiverType, PointsToAnalysisMethod targetMethod,
-                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MultiMethod.MultiMethodKey callerMultiMethodKey) {
-        return new BytecodeSensitiveSpecialInvokeTypeFlow(invokeLocation, receiverType, targetMethod, actualParameters, actualReturn, callerMultiMethodKey);
+                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MethodVariant.MethodVariantKey callerMethodVariantKey) {
+        return new BytecodeSensitiveSpecialInvokeTypeFlow(invokeLocation, receiverType, targetMethod, actualParameters, actualReturn, callerMethodVariantKey);
     }
 
     @Override
     public AbstractStaticInvokeTypeFlow createStaticInvokeTypeFlow(BytecodePosition invokeLocation, AnalysisType receiverType, PointsToAnalysisMethod targetMethod,
-                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MultiMethod.MultiMethodKey callerMultiMethodKey) {
-        return new BytecodeSensitiveStaticInvokeTypeFlow(invokeLocation, receiverType, targetMethod, actualParameters, actualReturn, callerMultiMethodKey);
+                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MethodVariant.MethodVariantKey callerMethodVariantKey) {
+        return new BytecodeSensitiveStaticInvokeTypeFlow(invokeLocation, receiverType, targetMethod, actualParameters, actualReturn, callerMethodVariantKey);
     }
 
     @Override
     public InvokeTypeFlow createDeoptInvokeTypeFlow(BytecodePosition invokeLocation, AnalysisType receiverType, PointsToAnalysisMethod targetMethod,
-                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MultiMethod.MultiMethodKey callerMultiMethodKey) {
+                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MethodVariant.MethodVariantKey callerMethodVariantKey) {
         throw AnalysisError.shouldNotReachHere("This has not been implemented yet");
     }
 
@@ -382,9 +382,15 @@ public final class BytecodeSensitiveAnalysisPolicy extends AnalysisPolicy {
     public void registerAsImplementationInvoked(InvokeTypeFlow invoke, PointsToAnalysisMethod method) {
         if (invoke.isContextInsensitive()) {
             method.registerAsImplementationInvoked(invoke);
-        } else {
-            method.registerAsImplementationInvoked(invoke.getOriginalInvoke());
+            return;
         }
+        /*
+         * Cloned invokes keep a pointer to their original invoke, but the original invoke itself
+         * has no original pointer. Use the original when available and fall back to the current
+         * invoke otherwise.
+         */
+        InvokeTypeFlow originalInvoke = invoke.getOriginalInvoke();
+        method.registerAsImplementationInvoked(originalInvoke != null ? originalInvoke : invoke);
     }
 
     static BytecodeAnalysisContextPolicy contextPolicy(BigBang bb) {

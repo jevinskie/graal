@@ -48,7 +48,6 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.type.TypeMirror;
 
 import com.oracle.truffle.dsl.processor.bytecode.parser.CustomOperationParser;
-import com.oracle.truffle.dsl.processor.bytecode.parser.SpecializationSignatureParser.SpecializationSignature;
 import com.oracle.truffle.dsl.processor.java.model.CodeVariableElement;
 import com.oracle.truffle.dsl.processor.model.SpecializationData;
 
@@ -165,10 +164,15 @@ public class OperationModel implements PrettyPrintable {
     public boolean variadicReturn;
 
     /**
-     * Internal operations are generated and used internally by the DSL. They should not be exposed
-     * through the builder and should not be serialized.
+     * Internal operations are generated and used internally by the DSL. They should not be
+     * serialized.
      */
     public boolean isInternal;
+    /**
+     * Private operations should not be exposed to the user through the builder. {@link #isInternal}
+     * implies {@link #isPrivate}.
+     */
+    public boolean isPrivate;
 
     public InstructionModel instruction;
     public CustomOperationModel customModel;
@@ -186,9 +190,6 @@ public class OperationModel implements PrettyPrintable {
     public OperationArgument[] operationBeginArguments = EMPTY_ARGUMENTS;
     public OperationArgument[] operationEndArguments = EMPTY_ARGUMENTS;
     public boolean operationBeginArgumentVarArgs = false;
-
-    // A unique identifier for instrumentation instructions.
-    public int instrumentationIndex;
 
     public OperationModel(BytecodeDSLModel parent, int id, OperationKind kind, String name, String builderName, String javadoc) {
         this.parent = parent;
@@ -211,20 +212,15 @@ public class OperationModel implements PrettyPrintable {
         return isVariadic || numDynamicOperands() > 0;
     }
 
-    public void setInstrumentationIndex(int instrumentationIndex) {
-        this.instrumentationIndex = instrumentationIndex;
-    }
-
-    public SpecializationSignature getSpecializationSignature(SpecializationData specialization) {
+    public Signature getSpecializationSignature(SpecializationData specialization) {
         return getSpecializationSignature(List.of(specialization));
     }
 
-    public SpecializationSignature getSpecializationSignature(List<SpecializationData> specializations) {
+    public Signature getSpecializationSignature(List<SpecializationData> specializations) {
         List<ExecutableElement> methods = specializations.stream().map(s -> s.getMethod()).toList();
-        SpecializationSignature includedSpecializationSignatures = CustomOperationParser.parseSignatures(methods,
+        return CustomOperationParser.parseSpecializationSignatures(methods,
                         specializations.get(0).getNode(),
                         constantOperands).get(0);
-        return includedSpecializationSignatures;
     }
 
     public OperationModel setTransparent(boolean isTransparent) {
@@ -302,6 +298,11 @@ public class OperationModel implements PrettyPrintable {
 
     public OperationModel setInternal() {
         this.isInternal = true;
+        return setPrivate();
+    }
+
+    public OperationModel setPrivate() {
+        this.isPrivate = true;
         return this;
     }
 

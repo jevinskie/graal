@@ -38,6 +38,7 @@ import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.nativeimage.c.type.VoidPointer;
 import org.graalvm.word.PointerBase;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.jdk.NativeLibrarySupport;
@@ -46,12 +47,16 @@ import com.oracle.svm.core.jdk.PlatformNativeLibrarySupport.NativeLibrary;
 import com.oracle.svm.core.jni.functions.JNIFunctionTables;
 import com.oracle.svm.core.jni.headers.JNIJavaVM;
 import com.oracle.svm.core.log.Log;
-import com.oracle.svm.util.StringUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.StringUtil;
 
 import jdk.graal.compiler.api.replacements.Fold;
-import org.graalvm.word.impl.Word;
 
 /** Loads/Unloads JVMTI agents that are located in shared object files. */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public class JvmtiAgents {
     private static final String AGENT_ON_LOAD = "Agent_OnLoad";
     private static final String AGENT_ON_UNLOAD = "Agent_OnUnload";

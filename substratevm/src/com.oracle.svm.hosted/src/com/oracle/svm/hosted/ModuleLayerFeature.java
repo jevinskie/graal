@@ -26,7 +26,7 @@ package com.oracle.svm.hosted;
 
 import static com.oracle.graal.pointsto.ObjectScanner.OtherReason;
 import static com.oracle.graal.pointsto.ObjectScanner.ScanReason;
-import static com.oracle.svm.core.util.VMError.shouldNotReachHereAtRuntime;
+import static com.oracle.svm.shared.util.VMError.shouldNotReachHereAtRuntime;
 
 import java.lang.module.Configuration;
 import java.lang.module.FindException;
@@ -53,6 +53,8 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -68,9 +70,8 @@ import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.svm.core.BuildPhaseProvider;
 import com.oracle.svm.core.NativeImageClassLoaderOptions;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.encoder.SymbolEncoder;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.fieldvaluetransformer.JavaConstantWrapper;
 import com.oracle.svm.core.heap.UnknownObjectField;
@@ -80,20 +81,24 @@ import com.oracle.svm.core.jdk.LayeredModuleSingleton;
 import com.oracle.svm.core.jdk.Resources;
 import com.oracle.svm.core.jdk.RuntimeClassLoaderValueSupport;
 import com.oracle.svm.core.jdk.RuntimeModuleSupport;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.core.util.HostedSubstrateUtil;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl.AfterAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.AnalysisAccessBase;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.imagelayer.CrossLayerConstantRegistryFeature;
 import com.oracle.svm.hosted.reflect.proxy.ProxyRenamingSubstitutionProcessor;
-import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ModuleSupport;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ModuleSupport;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.StringUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.HostedModuleSupport;
 
+import jdk.internal.loader.ClassLoaderValue;
 import jdk.internal.module.DefaultRoots;
 import jdk.internal.module.ModuleBootstrap;
 import jdk.internal.module.ModuleReferenceImpl;
@@ -139,6 +144,7 @@ import jdk.internal.module.SystemModuleFinders;
  * </p>
  */
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
 @SuppressWarnings("unused")
 public class ModuleLayerFeature implements InternalFeature {
     private ModuleLayerFeatureUtils moduleLayerFeatureUtils;
@@ -198,7 +204,8 @@ public class ModuleLayerFeature implements InternalFeature {
             access.registerFieldValueTransformer(moduleLayerFeatureUtils.moduleExportedPackagesField, new LayerPackagesTransformer(PackageType.EXPORTED, futureType));
         }
 
-        scanRuntimeBootLayerPrototype(access);
+        ModuleLayer runtimeBootLayerPrototype = scanRuntimeBootLayerPrototype(access);
+        scanRuntimeClassLoaderValueMapPrototype(access, runtimeBootLayerPrototype);
 
         access.registerFieldValueTransformer(moduleLayerFeatureUtils.moduleReferenceLocationField, ModuleLayerFeatureUtils.ResetModuleReferenceLocation.INSTANCE);
         access.registerFieldValueTransformer(moduleLayerFeatureUtils.moduleReferenceImplLocationField, ModuleLayerFeatureUtils.ResetModuleReferenceLocation.INSTANCE);
@@ -295,13 +302,26 @@ public class ModuleLayerFeature implements InternalFeature {
      * The concrete value is set in {@link ModuleLayerFeature#afterAnalysis}. Later when the field
      * is read the lazy value supplier scans the concrete value and patches the shadow heap.
      */
-    private void scanRuntimeBootLayerPrototype(BeforeAnalysisAccessImpl accessImpl) {
+    private ModuleLayer scanRuntimeBootLayerPrototype(BeforeAnalysisAccessImpl accessImpl) {
         Set<String> baseModules = ModuleLayer.boot().modules().stream().map(Module::getName).collect(Collectors.toSet());
         Function<String, ClassLoader> clf = moduleLayerFeatureUtils::getClassLoaderForBootLayerModule;
         ModuleLayer runtimeBootLayer = synthesizeRuntimeModuleLayer(new ArrayList<>(List.of(ModuleLayer.empty())), accessImpl, accessImpl.imageClassLoader, baseModules, EconomicSet.emptySet(), clf,
                         null);
         /* Only scan the value if module support is enabled and bootLayer field is reachable. */
         accessImpl.registerReachabilityHandler((a) -> accessImpl.rescanObject(runtimeBootLayer, scanReason), ReflectionUtil.lookupField(RuntimeModuleSupport.class, "bootLayer"));
+        return runtimeBootLayer;
+    }
+
+    /**
+     * ClassLoaderValue maps are filled after analysis, but reflective access to {@code ClassLoader}
+     * can make those maps part of the hosted heap verification roots. Scan a prototype map early so
+     * that the key and value types are admitted before the universe is sealed.
+     */
+    private void scanRuntimeClassLoaderValueMapPrototype(BeforeAnalysisAccessImpl accessImpl, ModuleLayer runtimeBootLayer) {
+        ConcurrentHashMap<Object, Object> prototypeMap = new ConcurrentHashMap<>();
+        prototypeMap.put(new ClassLoaderValue<List<ModuleLayer>>(), new CopyOnWriteArrayList<>(List.of(runtimeBootLayer)));
+        prototypeMap.put(new ClassLoaderValue<ServicesCatalog>(), ServicesCatalog.create());
+        accessImpl.registerReachabilityHandler((a) -> accessImpl.rescanObject(prototypeMap, scanReason), ReflectionUtil.lookupField(ClassLoader.class, "classLoaderValueMap"));
     }
 
     @Override
@@ -321,9 +341,9 @@ public class ModuleLayerFeature implements InternalFeature {
          * Parse explicitly added modules via --add-modules. This is done early as this information
          * is required when filtering the analysis reachable module set.
          */
-        Set<String> extraModules = ModuleSupport.parseModuleSetModifierProperty(ModuleSupport.PROPERTY_IMAGE_EXPLICITLY_ADDED_MODULES);
+        Set<String> extraModules = HostedModuleSupport.parseModuleSetModifierProperty(HostedModuleSupport.PROPERTY_IMAGE_EXPLICITLY_ADDED_MODULES);
         extraModules.addAll(Resources.getIncludedResourcesModules());
-        extraModules.stream().filter(Predicate.not(ModuleSupport.nonExplicitModules::contains)).forEach(moduleName -> {
+        extraModules.stream().filter(Predicate.not(HostedModuleSupport.nonExplicitModules::contains)).forEach(moduleName -> {
             Optional<?> module = accessImpl.imageClassLoader.findModule(moduleName);
             if (module.isEmpty()) {
                 throw VMError.shouldNotReachHere("Explicitly required module " + moduleName + " is not available");
@@ -415,7 +435,7 @@ public class ModuleLayerFeature implements InternalFeature {
         ModuleFinder upgradeModulePath = NativeImageClassLoaderSupport.finderFor("jdk.module.upgrade.path");
         ModuleFinder appModulePath = moduleLayerFeatureUtils.getAppModuleFinder();
         String mainModule = ModuleLayerFeatureUtils.getMainModuleName();
-        Set<String> limitModules = ModuleSupport.parseModuleSetModifierProperty(ModuleSupport.PROPERTY_IMAGE_EXPLICITLY_LIMITED_MODULES);
+        Set<String> limitModules = HostedModuleSupport.parseModuleSetModifierProperty(HostedModuleSupport.PROPERTY_IMAGE_EXPLICITLY_LIMITED_MODULES);
 
         Object systemModules = null;
         ModuleFinder systemModuleFinder;
@@ -464,13 +484,13 @@ public class ModuleLayerFeature implements InternalFeature {
         boolean addAllApplicationModules = false;
         for (String mod : addModules) {
             switch (mod) {
-                case ModuleSupport.MODULE_SET_ALL_DEFAULT:
+                case HostedModuleSupport.MODULE_SET_ALL_DEFAULT:
                     addAllDefaultModules = true;
                     break;
-                case ModuleSupport.MODULE_SET_ALL_SYSTEM:
+                case HostedModuleSupport.MODULE_SET_ALL_SYSTEM:
                     addAllSystemModules = true;
                     break;
-                case ModuleSupport.MODULE_SET_ALL_MODULE_PATH:
+                case HostedModuleSupport.MODULE_SET_ALL_MODULE_PATH:
                     addAllApplicationModules = true;
                     break;
                 default:
@@ -805,7 +825,7 @@ public class ModuleLayerFeature implements InternalFeature {
             runtimeModules = new HashMap<>();
             imageClassLoader = cl;
             nativeAccessEnabled = NativeImageClassLoaderOptions.EnableNativeAccess.getValue().values().stream()
-                            .flatMap(m -> Arrays.stream(SubstrateUtil.split(m, ",")))
+                            .flatMap(m -> Arrays.stream(StringUtil.split(m, ",")))
                             .collect(Collectors.toSet());
 
             Method classGetDeclaredFields0Method = ReflectionUtil.lookupMethod(Class.class, "getDeclaredFields0", boolean.class);

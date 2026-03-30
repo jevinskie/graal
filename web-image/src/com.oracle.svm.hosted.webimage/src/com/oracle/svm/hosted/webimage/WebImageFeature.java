@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,9 +25,6 @@
 package com.oracle.svm.hosted.webimage;
 
 import java.io.IOException;
-import java.lang.reflect.Executable;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,7 +36,6 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.dynamicaccess.AccessCondition;
 import org.graalvm.nativeimage.hosted.Feature;
-import org.graalvm.nativeimage.impl.RuntimeClassInitializationSupport;
 import org.graalvm.nativeimage.impl.RuntimeJNIAccessSupport;
 import org.graalvm.nativeimage.impl.RuntimeSystemPropertiesSupport;
 import org.graalvm.webimage.api.JS;
@@ -60,7 +56,7 @@ import com.oracle.svm.configure.config.conditional.AccessConditionResolver;
 import com.oracle.svm.core.c.ProjectHeaderFile;
 import com.oracle.svm.core.c.ProjectHeaderFileHeaderResolversRegistryFeature;
 import com.oracle.svm.core.code.ImageCodeInfo;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
@@ -75,14 +71,10 @@ import com.oracle.svm.core.jdk.buildtimeinit.FileSystemProviderBuildTimeInitSupp
 import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.log.Loggers;
 import com.oracle.svm.core.log.NoopLog;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.Disallowed;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl;
+import com.oracle.svm.hosted.GuestTypes;
 import com.oracle.svm.hosted.HostedConfiguration;
+import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.classinitialization.ClassInitializationSupport;
 import com.oracle.svm.hosted.code.SubstrateCompilationDirectives;
 import com.oracle.svm.hosted.config.ConfigurationParserUtils;
@@ -95,9 +87,16 @@ import com.oracle.svm.hosted.webimage.name.WebImageNamingConvention;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
 import com.oracle.svm.hosted.webimage.snippets.WebImageNonSnippetLowerings;
 import com.oracle.svm.hosted.webimage.wasm.WasmLogHandler;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.AnnotationUtil;
+import com.oracle.svm.util.GuestAccess;
 import com.oracle.svm.util.JVMCIReflectionUtil;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.util.JVMCIRuntimeClassInitializationSupport;
 import com.oracle.svm.util.dynamicaccess.JVMCIRuntimeReflection;
 import com.oracle.svm.webimage.WebImageSystemPropertiesSupport;
 import com.oracle.svm.webimage.api.Nothing;
@@ -119,7 +118,12 @@ import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.graph.Node;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.util.Providers;
+import jdk.graal.compiler.vmaccess.VMAccess;
+import jdk.vm.ci.meta.JavaConstant;
+import jdk.vm.ci.meta.MetaAccessProvider;
+import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import jdk.vm.ci.meta.ResolvedJavaType;
 
 @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 @AutomaticallyRegisteredFeature
@@ -153,6 +157,8 @@ public class WebImageFeature implements InternalFeature {
     public void beforeAnalysis(BeforeAnalysisAccess access) {
         FeatureImpl.BeforeAnalysisAccessImpl a = (FeatureImpl.BeforeAnalysisAccessImpl) access;
         AnalysisMetaAccess metaAccess = a.getMetaAccess();
+        MetaAccessProvider originalMetaAccess = metaAccess.getWrapped();
+        ImageClassLoader imageClassLoader = a.getImageClassLoader();
         BigBang bigbang = a.getBigBang();
 
         // For DynamicNewArrayLowerer
@@ -198,18 +204,22 @@ public class WebImageFeature implements InternalFeature {
          * On JDK21, ReferencedKeySet and ReferencedKeyMap don't exist. We have to go through
          * reflection to access them because analysis tools like spotbugs still run on JDK21
          */
-        Field baseLocaleCacheField = a.findField("sun.util.locale.BaseLocale$1InterningCache", "CACHE");
-        Field localeCacheField = a.findField("java.util.Locale$LocaleCache", "LOCALE_CACHE");
+        GuestTypes guestTypes = imageClassLoader.guestTypes;
+        ResolvedJavaType baseLocaleInterningCacheType = guestTypes.findType("sun.util.locale.BaseLocale$1InterningCache").getOrFail();
+        ResolvedJavaField baseLocaleCacheField = JVMCIReflectionUtil.getUniqueDeclaredField(baseLocaleInterningCacheType, "CACHE");
+        ResolvedJavaType localeCacheType = guestTypes.findType("java.util.Locale$LocaleCache").getOrFail();
+        ResolvedJavaField localeCacheField = JVMCIReflectionUtil.getUniqueDeclaredField(localeCacheType, "LOCALE_CACHE");
+        VMAccess vmAccess = GuestAccess.get();
 
         a.registerFieldValueTransformer(baseLocaleCacheField, (receiver, originalValue) -> {
             /*
              * Executes `ReferencedKeySet.create(true,
              * ReferencedKeySet.concurrentHashMapSupplier())` with reflection.
              */
-            Class<?> referencedKeySetClazz = ReflectionUtil.lookupClass("jdk.internal.util.ReferencedKeySet");
-            Method createMethod = ReflectionUtil.lookupMethod(referencedKeySetClazz, "create", boolean.class, Supplier.class);
-            Method concurrentHashMapSupplierMethod = ReflectionUtil.lookupMethod(referencedKeySetClazz, "concurrentHashMapSupplier");
-            return ReflectionUtil.invokeMethod(createMethod, null, true, ReflectionUtil.invokeMethod(concurrentHashMapSupplierMethod, null));
+            ResolvedJavaType referencedKeySetClazz = guestTypes.findType("jdk.internal.util.ReferencedKeySet").getOrFail();
+            ResolvedJavaMethod createMethod = JVMCIReflectionUtil.getUniqueDeclaredMethod(originalMetaAccess, referencedKeySetClazz, "create", boolean.class, Supplier.class);
+            ResolvedJavaMethod concurrentHashMapSupplierMethod = JVMCIReflectionUtil.getUniqueDeclaredMethod(originalMetaAccess, referencedKeySetClazz, "concurrentHashMapSupplier");
+            return vmAccess.invoke(createMethod, null, JavaConstant.TRUE, vmAccess.invoke(concurrentHashMapSupplierMethod, null));
         });
 
         a.registerFieldValueTransformer(localeCacheField, (receiver, originalValue) -> {
@@ -217,10 +227,10 @@ public class WebImageFeature implements InternalFeature {
              * Executes `ReferencedKeyMap.create(true,
              * ReferencedKeyMap.concurrentHashMapSupplier())` with reflection.
              */
-            Class<?> referencedKeyMapClazz = ReflectionUtil.lookupClass("jdk.internal.util.ReferencedKeyMap");
-            Method createMethod = ReflectionUtil.lookupMethod(referencedKeyMapClazz, "create", boolean.class, Supplier.class);
-            Method concurrentHashMapSupplierMethod = ReflectionUtil.lookupMethod(referencedKeyMapClazz, "concurrentHashMapSupplier");
-            return ReflectionUtil.invokeMethod(createMethod, null, true, ReflectionUtil.invokeMethod(concurrentHashMapSupplierMethod, null));
+            ResolvedJavaType referencedKeyMapClazz = imageClassLoader.guestTypes.findType("jdk.internal.util.ReferencedKeyMap").getOrFail();
+            ResolvedJavaMethod createMethod = JVMCIReflectionUtil.getUniqueDeclaredMethod(originalMetaAccess, referencedKeyMapClazz, "create", boolean.class, Supplier.class);
+            ResolvedJavaMethod concurrentHashMapSupplierMethod = JVMCIReflectionUtil.getUniqueDeclaredMethod(originalMetaAccess, referencedKeyMapClazz, "concurrentHashMapSupplier");
+            return vmAccess.invoke(createMethod, null, JavaConstant.TRUE, vmAccess.invoke(concurrentHashMapSupplierMethod, null));
         });
     }
 
@@ -228,7 +238,7 @@ public class WebImageFeature implements InternalFeature {
     public void duringSetup(DuringSetupAccess a) {
         FeatureImpl.DuringSetupAccessImpl access = (FeatureImpl.DuringSetupAccessImpl) a;
 
-        String entryPointConfig = WebImageOptions.EntryPointsConfig.getValue(ImageSingletons.lookup(HostedOptionValues.class));
+        String entryPointConfig = WebImageOptions.EntryPointsConfig.getValue(HostedOptionValues.singleton().get());
         if (entryPointConfig != null) {
             AccessConditionResolver<AccessCondition> conditionResolver = new NativeImageConditionResolver(access.getImageClassLoader(),
                             ClassInitializationSupport.singleton());
@@ -240,11 +250,12 @@ public class WebImageFeature implements InternalFeature {
                 throw VMError.shouldNotReachHere("Error reading the entry points configuration file: ", ex);
             }
 
-            for (Executable m : entryPointsData.entryPoints) {
-                AnalysisMethod am = access.getBigBang().addRootMethod(m, true, "Entry points from " + entryPointConfig + ", registered in " + WebImageFeature.class);
+            for (ResolvedJavaMethod m : entryPointsData.entryPoints) {
+                AnalysisMethod aMethod = access.getUniverse().lookup(m);
+                access.getBigBang().addRootMethod(aMethod, true, "Entry points from " + entryPointConfig + ", registered in " + WebImageFeature.class);
                 // The following line is required for the method code to be generated
                 // TODO: why adding it as a root method is not enough?
-                SubstrateCompilationDirectives.singleton().registerForcedCompilation(am);
+                SubstrateCompilationDirectives.singleton().registerForcedCompilation(aMethod);
             }
         }
         access.getHostVM().registerNeverInlineTrivialHandler(this::neverInlineTrivial);
@@ -267,10 +278,11 @@ public class WebImageFeature implements InternalFeature {
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
         FeatureImpl.AfterRegistrationAccessImpl accessImpl = (FeatureImpl.AfterRegistrationAccessImpl) access;
+        ImageClassLoader imageClassLoader = accessImpl.getImageClassLoader();
         if (WebImageOptions.supportRuntime(WebImageOptions.VMType.Browser)) {
             ImageSingletons.add(WebImageHttpHandlerSubstitutions.class, new WebImageHttpHandlerSubstitutions());
         }
-        if (WebImageOptions.UseRandomForTempFiles.getValue(HostedOptionValues.singleton())) {
+        if (WebImageOptions.UseRandomForTempFiles.getValue(HostedOptionValues.singleton().get())) {
             ImageSingletons.add(WebImageTempFileHelperSupport.class, new WebImageTempFileHelperSupportWithoutSecureRandom());
         } else {
             ImageSingletons.add(WebImageTempFileHelperSupport.class, new WebImageTempFileHelperSupport());
@@ -281,7 +293,7 @@ public class WebImageFeature implements InternalFeature {
         // Exceptions from the default class initialization rules.
         // Similar to com.oracle.svm.hosted.jdk.JDKInitializationFeature
 
-        RuntimeClassInitializationSupport rci = ImageSingletons.lookup(RuntimeClassInitializationSupport.class);
+        JVMCIRuntimeClassInitializationSupport rci = JVMCIRuntimeClassInitializationSupport.singleton();
 
         // This class gets initialized, causing the "unintentionally initialized at build time"
         // error. The initializer is simple and does not depend on other classes, so just allow it.
@@ -303,7 +315,8 @@ public class WebImageFeature implements InternalFeature {
         rci.initializeAtRunTime("java.nio.file.FileSystems$DefaultFileSystemHolder", "Parts of static initializer is substituted to inject custom FileSystemProvider");
         rci.initializeAtRunTime("java.util.zip.ZipFile$Source", "avoid initializing wrong file system");
 
-        for (Class<? extends JSObject> jsObjectSubclass : accessImpl.findSubclasses(JSObject.class)) {
+        ResolvedJavaType jsObject = GuestAccess.get().lookupType(JSObject.class);
+        for (ResolvedJavaType jsObjectSubclass : imageClassLoader.guestTypes.findSubtypes(jsObject, false)) {
             rci.initializeAtRunTime(jsObjectSubclass,
                             "Initialize JSObject subclasses at runtime, since their custom constructors create mirrors and set up fields for the mirrors.");
         }

@@ -39,7 +39,7 @@ import org.graalvm.word.impl.Word;
 import com.oracle.svm.core.FrameAccess;
 import com.oracle.svm.core.ReservedRegisters;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.graal.code.SubstrateBackend;
 import com.oracle.svm.core.graal.code.SubstrateCallingConventionKind;
@@ -51,6 +51,7 @@ import com.oracle.svm.core.graal.nodes.LoadMethodByIndexNode;
 import com.oracle.svm.core.graal.nodes.LoadOpenTypeWorldDispatchTableStartingOffset;
 import com.oracle.svm.core.graal.nodes.LoweredDeadEndNode;
 import com.oracle.svm.core.graal.nodes.ReadReservedRegisterFixedNode;
+import com.oracle.svm.core.graal.nodes.ReadReservedRegisterFloatingNode;
 import com.oracle.svm.core.graal.nodes.ThrowBytecodeExceptionNode;
 import com.oracle.svm.core.hub.crema.CremaSupport;
 import com.oracle.svm.core.imagelayer.DynamicImageLayerInfo;
@@ -61,7 +62,7 @@ import com.oracle.svm.core.nodes.SubstrateMethodCallTargetNode;
 import com.oracle.svm.core.snippets.ImplicitExceptions;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.core.common.memory.BarrierType;
 import jdk.graal.compiler.core.common.memory.MemoryOrderMode;
@@ -668,13 +669,14 @@ public abstract class NonSnippetLowerings {
 
             ValueNode virtualMethodAddress;
             if (relativeCodePointers) {
-                /*
-                 * GR-64589: this can be a floating read outside of deoptimization target methods,
-                 * but this code has no knowledge of deoptimization (class ReadReservedRegister).
-                 */
-                FixedWithNextNode codeBase = graph.add(new ReadReservedRegisterFixedNode(ReservedRegisters.singleton().getCodeBaseRegister()));
-                graph.addBeforeFixed(prependTo, codeBase);
-
+                ValueNode codeBase;
+                ReservedRegisters rr = ReservedRegisters.singleton();
+                if (rr.mustUseFixedRead(graph)) {
+                    codeBase = graph.add(new ReadReservedRegisterFixedNode(rr.getCodeBaseRegister()));
+                    graph.addBeforeFixed(prependTo, (FixedWithNextNode) codeBase);
+                } else {
+                    codeBase = graph.unique(new ReadReservedRegisterFloatingNode(rr.getCodeBaseRegister()));
+                }
                 virtualMethodAddress = graph.unique(new AddNode(vtableEntry, codeBase));
             } else {
                 virtualMethodAddress = vtableEntry;

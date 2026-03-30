@@ -27,7 +27,7 @@ package com.oracle.svm.core.graal.aarch64;
 import static com.oracle.svm.core.graal.aarch64.SubstrateAArch64RegisterConfig.fp;
 import static com.oracle.svm.core.graal.code.SubstrateBackend.SubstrateMarkId.PROLOGUE_DECD_RSP;
 import static com.oracle.svm.core.graal.code.SubstrateBackend.SubstrateMarkId.PROLOGUE_END;
-import static com.oracle.svm.core.util.VMError.unsupportedFeature;
+import static com.oracle.svm.shared.util.VMError.unsupportedFeature;
 import static jdk.graal.compiler.core.common.GraalOptions.ZapStackOnMethodEntry;
 import static jdk.graal.compiler.lir.LIRInstruction.OperandFlag.REG;
 import static jdk.graal.compiler.lir.LIRValueUtil.asConstantValue;
@@ -45,7 +45,7 @@ import org.graalvm.nativeimage.ImageSingletons;
 import com.oracle.svm.core.FrameAccess;
 import com.oracle.svm.core.ReservedRegisters;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.aarch64.SubstrateAArch64MacroAssembler;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.deopt.DeoptimizationRuntime;
@@ -84,7 +84,7 @@ import com.oracle.svm.core.nodes.SubstrateIndirectCallTargetNode;
 import com.oracle.svm.core.pltgot.GOTAccess;
 import com.oracle.svm.core.pltgot.PLTGOTConfiguration;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.asm.BranchTargetOutOfBoundsException;
 import jdk.graal.compiler.asm.Label;
@@ -1417,6 +1417,11 @@ public class SubstrateAArch64Backend extends SubstrateBackendWithAssembler<Subst
                 assert InterpreterSupport.isEnabled();
                 yield new AArch64InterpreterStubs.InterpreterLeaveStubContext(method);
             }
+            case InterpreterDeoptEntryPointStub -> {
+                assert InterpreterSupport.isEnabled();
+                assert SubstrateOptions.useRistretto();
+                yield new AArch64InterpreterStubs.InterpreterDeoptEntryPointStubFrameContext(method, callingConvention);
+            }
             case NoDeoptStub -> new SubstrateAArch64FrameContext(method);
         };
     }
@@ -1489,9 +1494,14 @@ public class SubstrateAArch64Backend extends SubstrateBackendWithAssembler<Subst
             int length = kind.getPlatformKind().getVectorLength();
             if (length == 1) {
                 return super.emitConstant(kind, constant);
-            } else if (constant instanceof SimdConstant) {
-                assert ((SimdConstant) constant).getVectorLength() == length;
-                return super.emitConstant(kind, constant);
+            } else if (constant instanceof SimdConstant simd) {
+                /*
+                 * JVMCI doesn't have a 16-bit vector kind. Two-byte constants are assigned a 32-bit
+                 * kind instead.
+                 */
+                boolean specialCaseTwoBytes = kind.getPlatformKind().equals(AArch64Kind.V32_BYTE) && simd.getSerializedSize() == 2;
+                assert specialCaseTwoBytes || simd.getVectorLength() == length : constant + " " + length;
+                return super.emitConstant(kind, simd);
             } else {
                 return super.emitConstant(kind, SimdConstant.broadcast(constant, length));
             }

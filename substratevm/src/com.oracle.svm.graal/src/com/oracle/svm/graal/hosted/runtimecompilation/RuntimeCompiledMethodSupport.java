@@ -24,9 +24,9 @@
  */
 package com.oracle.svm.graal.hosted.runtimecompilation;
 
-import static com.oracle.svm.common.meta.MultiMethod.ORIGINAL_METHOD;
 import static com.oracle.svm.hosted.code.SubstrateCompilationDirectives.DEOPT_TARGET_METHOD;
 import static com.oracle.svm.hosted.code.SubstrateCompilationDirectives.RUNTIME_COMPILED_METHOD;
+import static com.oracle.svm.common.meta.MethodVariant.ORIGINAL_METHOD;
 
 import java.util.Arrays;
 import java.util.List;
@@ -55,8 +55,6 @@ import com.oracle.svm.core.graal.nodes.DeoptEntryNode;
 import com.oracle.svm.core.graal.nodes.DeoptEntrySupport;
 import com.oracle.svm.core.graal.nodes.DeoptProxyAnchorNode;
 import com.oracle.svm.core.graal.nodes.ThrowBytecodeExceptionNode;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.graal.RuntimeCompilationSupport;
 import com.oracle.svm.graal.SubstrateGraalUtils;
 import com.oracle.svm.hosted.HeapBreakdownProvider;
@@ -74,6 +72,13 @@ import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 import com.oracle.svm.hosted.nodes.DeoptProxyNode;
 import com.oracle.svm.hosted.phases.AnalysisGraphBuilderPhase;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.spi.ConstantFieldProvider;
@@ -121,6 +126,7 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 /**
  * This class infrastructure needed for creating the RuntimeCompiledMethods variants.
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Duplicable.class, other = Disallowed.class)
 public class RuntimeCompiledMethodSupport {
 
     public static class Options {
@@ -194,7 +200,7 @@ public class RuntimeCompiledMethodSupport {
             }
         };
 
-        hUniverse.getMethods().stream().map(method -> method.getMultiMethod(DEOPT_TARGET_METHOD)).filter(method -> {
+        hUniverse.getMethods().stream().map(method -> method.getMethodVariant(DEOPT_TARGET_METHOD)).filter(method -> {
             if (method != null) {
                 return compileQueue.isRegisteredDeoptTarget(method);
             }
@@ -241,7 +247,7 @@ public class RuntimeCompiledMethodSupport {
         }
 
         private void compileRuntimeCompiledMethod(DebugContext debug) {
-            assert method.getMultiMethodKey() == RUNTIME_COMPILED_METHOD;
+            assert method.getMethodVariantKey() == RUNTIME_COMPILED_METHOD;
 
             /*
              * The availability of NodeSourcePosition for JIT compilation is controlled by a
@@ -283,10 +289,10 @@ public class RuntimeCompiledMethodSupport {
              * Registering all deopt entries seen within the optimized graph. This should be
              * strictly a subset of the deopt entrypoints seen during evaluation.
              */
-            AnalysisMethod origMethod = method.getMultiMethod(ORIGINAL_METHOD).getWrapped();
+            AnalysisMethod origMethod = method.getMethodVariant(ORIGINAL_METHOD).getWrapped();
             DeoptimizationUtils.registerDeoptEntries(graph, compilationState.registeredRuntimeCompilations.contains(origMethod),
                             (deoptEntryMethod -> {
-                                PointsToAnalysisMethod deoptMethod = (PointsToAnalysisMethod) ((PointsToAnalysisMethod) deoptEntryMethod).getMultiMethod(DEOPT_TARGET_METHOD);
+                                PointsToAnalysisMethod deoptMethod = (PointsToAnalysisMethod) ((PointsToAnalysisMethod) deoptEntryMethod).getMethodVariant(DEOPT_TARGET_METHOD);
                                 VMError.guarantee(deoptMethod != null, "New deopt target method seen: %s", deoptEntryMethod);
                                 return deoptMethod;
                             }));

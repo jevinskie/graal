@@ -62,19 +62,22 @@ import com.oracle.svm.core.debug.BFDNameProvider;
 import com.oracle.svm.core.debug.SubstrateDebugInfoInstaller;
 import com.oracle.svm.core.debug.SubstrateDebugTypeEntrySupport;
 import com.oracle.svm.core.debug.gdb.GdbJitInterface;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.fieldvaluetransformer.JVMCIFieldValueTransformerWithAvailability;
 import com.oracle.svm.core.heap.Heap;
-import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.ProgressReporter;
 import com.oracle.svm.hosted.c.CGlobalDataFeature;
 import com.oracle.svm.hosted.c.NativeLibraries;
 import com.oracle.svm.hosted.util.DiagnosticUtils;
-import com.oracle.svm.util.GraalAccess;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.util.GuestAccess;
 import com.oracle.svm.util.JVMCIReflectionUtil;
-import com.oracle.svm.util.ReflectionUtil;
 
 import jdk.graal.compiler.core.common.CompressEncoding;
 import jdk.graal.compiler.debug.DebugContext;
@@ -85,6 +88,7 @@ import jdk.vm.ci.meta.ResolvedJavaField;
 
 @AutomaticallyRegisteredFeature
 @SuppressWarnings("unused")
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 class NativeImageDebugInfoFeature implements InternalFeature {
 
     public NativeLibraries nativeLibs;
@@ -100,9 +104,9 @@ class NativeImageDebugInfoFeature implements InternalFeature {
      * during analysis, but still reachable through the SubstrateDebugTypeEntrySupport singleton.
      */
     public static final Set<ResolvedJavaField> foreignTypeEntryFields = Set.of(
-                    JVMCIReflectionUtil.getUniqueDeclaredField(GraalAccess.lookupType(TypeEntry.class), "typeName"),
-                    JVMCIReflectionUtil.getUniqueDeclaredField(GraalAccess.lookupType(TypeEntry.class), "typeSignature"),
-                    JVMCIReflectionUtil.getUniqueDeclaredField(GraalAccess.lookupType(ForeignStructTypeEntry.class), "typedefName"));
+                    JVMCIReflectionUtil.getUniqueDeclaredField(GuestAccess.get().lookupType(TypeEntry.class), "typeName"),
+                    JVMCIReflectionUtil.getUniqueDeclaredField(GuestAccess.get().lookupType(TypeEntry.class), "typeSignature"),
+                    JVMCIReflectionUtil.getUniqueDeclaredField(GuestAccess.get().lookupType(ForeignStructTypeEntry.class), "typedefName"));
 
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
@@ -261,7 +265,7 @@ class NativeImageDebugInfoFeature implements InternalFeature {
         try (Timer.StopTimer _ = timer.start()) {
             var accessImpl = (FeatureImpl.BeforeImageWriteAccessImpl) access;
             var image = accessImpl.getImage();
-            var debugContext = new DebugContext.Builder(HostedOptionValues.singleton(), new GraalDebugHandlersFactory(GraalAccess.getOriginalSnippetReflection())).build();
+            var debugContext = new DebugContext.Builder(HostedOptionValues.singleton().get(), new GraalDebugHandlersFactory(GuestAccess.get().getSnippetReflection())).build();
             DebugInfoProvider provider = new NativeImageDebugInfoProvider(debugContext, image.getCodeCache(), image.getHeap(), image.getNativeLibs(), accessImpl.getMetaAccess(),
                             accessImpl.getRuntimeConfiguration());
             var objectFile = image.getObjectFile();

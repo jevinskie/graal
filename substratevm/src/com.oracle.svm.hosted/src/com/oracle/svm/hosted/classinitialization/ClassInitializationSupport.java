@@ -55,15 +55,19 @@ import com.oracle.graal.pointsto.meta.BaseLayerType;
 import com.oracle.graal.pointsto.reports.ReportUtils;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.option.AccumulatingLocatableMultiOptionValue;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.LinkAtBuildTimeSupport;
+import com.oracle.svm.shared.option.AccumulatingLocatableMultiOptionValue;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.HostedModuleSupport;
 import com.oracle.svm.util.JVMCIRuntimeClassInitializationSupport;
-import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ModuleSupport;
 import com.oracle.svm.util.OriginalClassProvider;
 
 import jdk.graal.compiler.core.common.ContextClassLoaderScope;
@@ -108,6 +112,7 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  * build-time initialized class reference image heap values that were copied from the corresponding
  * fields in the hosting VM.
  */
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
 public class ClassInitializationSupport implements JVMCIRuntimeClassInitializationSupport {
 
     /**
@@ -219,6 +224,11 @@ public class ClassInitializationSupport implements JVMCIRuntimeClassInitializati
      */
     InitKind computedInitKindFor(Class<?> clazz) {
         return classInitKinds.get(clazz);
+    }
+
+    public boolean isFailedInitialization(ResolvedJavaType type) {
+        // GR-71807: reverse this so that the Class variant calls the ResolvedJavaType version
+        return isFailedInitialization(OriginalClassProvider.getJavaClass(type));
     }
 
     public boolean isFailedInitialization(Class<?> clazz) {
@@ -342,26 +352,22 @@ public class ClassInitializationSupport implements JVMCIRuntimeClassInitializati
 
     @Override
     public void initializeAtRunTime(Class<?> clazz, String reason) {
-        UserError.guarantee(!configurationSealed, "The class initialization configuration can be changed only before the phase analysis.");
-        classInitializationConfiguration.insert(clazz.getTypeName(), InitKind.RUN_TIME, reason, true);
+        initializeAtRunTime(clazz.getTypeName(), reason, true);
     }
 
     @Override
     public void initializeAtRunTime(ResolvedJavaType aType, String reason) {
-        // GR-71807: reverse this so that the Class variant calls the ResolvedJavaType version
-        initializeAtRunTime(OriginalClassProvider.getJavaClass(aType), reason);
+        initializeAtRunTime(aType.toClassName(), reason, true);
     }
 
     @Override
     public void initializeAtRunTime(String name, String reason) {
+        initializeAtRunTime(name, reason, loader.guestTypes.findType(name).isPresent());
+    }
+
+    public void initializeAtRunTime(String name, String reason, boolean strict) {
         UserError.guarantee(!configurationSealed, "The class initialization configuration can be changed only before the phase analysis.");
-        ResolvedJavaType type = loader.findType(name).get();
-        if (type != null) {
-            classInitializationConfiguration.insert(name, InitKind.RUN_TIME, reason, true);
-            initializeAtRunTime(type, reason);
-        } else {
-            classInitializationConfiguration.insert(name, InitKind.RUN_TIME, reason, false);
-        }
+        classInitializationConfiguration.insert(name, InitKind.RUN_TIME, reason, strict);
     }
 
     @Override
@@ -641,7 +647,7 @@ public class ClassInitializationSupport implements JVMCIRuntimeClassInitializati
         Set<String> jdkModules = Set.of("java.base", "jdk.management", "java.management", "org.graalvm.collections");
 
         String classModuleName = jClass.getModule().getName();
-        boolean alwaysReachedModule = classModuleName != null && (ModuleSupport.SYSTEM_MODULES.contains(classModuleName) || jdkModules.contains(classModuleName));
+        boolean alwaysReachedModule = classModuleName != null && (HostedModuleSupport.SYSTEM_MODULES.contains(classModuleName) || jdkModules.contains(classModuleName));
         return jClass.isPrimitive() ||
                         jClass.isArray() ||
                         alwaysReachedModule ||

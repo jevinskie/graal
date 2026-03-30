@@ -24,8 +24,6 @@
  */
 package com.oracle.svm.hosted.imagelayer;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -39,41 +37,42 @@ import java.util.function.Supplier;
 import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.graal.pointsto.heap.ImageHeapRelocatableConstant;
+import com.oracle.graal.pointsto.infrastructure.Universe;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.svm.core.BuildPhaseProvider;
 import com.oracle.svm.core.StaticFieldsSupport;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.imagelayer.BuildingImageLayerPredicate;
 import com.oracle.svm.core.imagelayer.DynamicImageLayerInfo;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.imagelayer.LayeredImageOptions;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredPersistFlags;
-import com.oracle.svm.core.layeredimagesingleton.MultiLayeredImageSingleton;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacksSupplier;
-import com.oracle.svm.core.traits.SingletonTrait;
-import com.oracle.svm.core.traits.SingletonTraitKind;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 import com.oracle.svm.hosted.meta.UniverseBuilder;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.graal.compiler.nodes.calc.FloatingNode;
 import jdk.graal.compiler.nodes.spi.LoweringTool;
 import jdk.vm.ci.meta.JavaConstant;
-import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaField;
+import jdk.vm.ci.meta.ResolvedJavaType;
 
 /**
  * This class keeps track of the location of static fields assigned in previous layers as well as
@@ -181,9 +180,8 @@ public class LayeredStaticFieldSupport extends LayeredClassInitialization {
         assert priorInstalledLocation.equals(result);
     }
 
-    private void installFieldInAppLayer(Field field, MetaAccessProvider meta) {
-        AnalysisField aField = (AnalysisField) meta.lookupJavaField(field);
-        installFieldInAppLayer(aField);
+    private void installFieldInAppLayer(ResolvedJavaField field, Universe universe) {
+        installFieldInAppLayer((AnalysisField) universe.lookup(field));
     }
 
     void installFieldInAppLayer(AnalysisField aField) {
@@ -232,11 +230,9 @@ public class LayeredStaticFieldSupport extends LayeredClassInitialization {
     }
 
     @Override
-    void initializeClassInAppLayer(Class<?> c, MetaAccessProvider meta) {
-        for (var field : c.getDeclaredFields()) {
-            if (Modifier.isStatic(field.getModifiers())) {
-                installFieldInAppLayer(field, meta);
-            }
+    void initializeClassInAppLayer(ResolvedJavaType type, Universe universe) {
+        for (var field : type.getStaticFields()) {
+            installFieldInAppLayer(field, universe);
         }
     }
 
@@ -405,8 +401,8 @@ public class LayeredStaticFieldSupport extends LayeredClassInitialization {
     static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
 
         @Override
-        public SingletonTrait getLayeredCallbacksTrait() {
-            return new SingletonTrait(SingletonTraitKind.LAYERED_CALLBACKS, new SingletonLayeredCallbacks<LayeredStaticFieldSupport>() {
+        public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
+            return new LayeredCallbacksSingletonTrait(new SingletonLayeredCallbacks<LayeredStaticFieldSupport>() {
                 @Override
                 public LayeredPersistFlags doPersist(ImageSingletonWriter writer, LayeredStaticFieldSupport singleton) {
                     writer.writeInt("appLayerPrimitiveFieldStartingOffset", singleton.appLayerStaticFieldOffsets.nextPrimitiveField);
@@ -455,6 +451,7 @@ public class LayeredStaticFieldSupport extends LayeredClassInitialization {
 }
 
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = SingleLayer.class)
 class LayeredStaticFieldSupportBaseLayerFeature implements InternalFeature {
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
@@ -479,6 +476,7 @@ class LayeredStaticFieldSupportBaseLayerFeature implements InternalFeature {
 }
 
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = SingleLayer.class)
 class LayeredStaticFieldSupportAppLayerFeature implements InternalFeature {
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,13 +36,13 @@ import org.graalvm.word.WordBase;
 import com.oracle.svm.core.SubstrateMetadata;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
-import com.oracle.svm.core.hub.crema.CremaResolvedJavaRecordComponent;
 import com.oracle.svm.core.hub.registry.SymbolsSupport;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.espresso.classfile.descriptors.Name;
 import com.oracle.svm.espresso.classfile.descriptors.Symbol;
 import com.oracle.svm.espresso.classfile.descriptors.Type;
 import com.oracle.svm.espresso.classfile.descriptors.TypeSymbols;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.vm.ci.meta.Assumptions;
 import jdk.vm.ci.meta.JavaConstant;
@@ -207,7 +207,11 @@ public abstract class InterpreterResolvedJavaType extends InterpreterAnnotated i
 
     @Override
     public final boolean hasSameDefiningClassLoader(InterpreterResolvedJavaType other) {
-        return this.clazz.getClassLoader() == other.clazz.getClassLoader();
+        return this.getClassLoader() == other.getClassLoader();
+    }
+
+    public final ClassLoader getClassLoader() {
+        return SubstrateUtil.cast(getJavaClass(), DynamicHub.class).getClassLoader();
     }
 
     @Override
@@ -247,11 +251,6 @@ public abstract class InterpreterResolvedJavaType extends InterpreterAnnotated i
 
     @Override
     public final boolean isRecord() {
-        throw VMError.intentionallyUnimplemented();
-    }
-
-    @Override
-    public List<? extends CremaResolvedJavaRecordComponent> getRecordComponents() {
         throw VMError.intentionallyUnimplemented();
     }
 
@@ -366,7 +365,7 @@ public abstract class InterpreterResolvedJavaType extends InterpreterAnnotated i
     }
 
     @Override
-    public ResolvedJavaMethod[] getDeclaredConstructors() {
+    public InterpreterResolvedJavaMethod[] getDeclaredConstructors() {
         throw VMError.intentionallyUnimplemented();
     }
 

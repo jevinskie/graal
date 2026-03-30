@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.pltgot;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.Uninterruptible;
 
 public interface MethodAddressResolver {
 

@@ -24,11 +24,9 @@
  */
 package com.oracle.svm.hosted;
 
-import java.lang.annotation.Annotation;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -47,7 +45,7 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.graalvm.collections.EconomicSet;
-import org.graalvm.collections.Pair;
+import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.dynamicaccess.AccessCondition;
 import org.graalvm.nativeimage.dynamicaccess.ForeignAccess;
 import org.graalvm.nativeimage.dynamicaccess.JNIAccess;
@@ -56,7 +54,7 @@ import org.graalvm.nativeimage.dynamicaccess.ResourceAccess;
 import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.nativeimage.hosted.Feature.DuringAnalysisAccess;
 import org.graalvm.nativeimage.hosted.FieldValueTransformer;
-import org.graalvm.nativeimage.hosted.RuntimeReflection;
+import org.graalvm.nativeimage.impl.RuntimeReflectionSupport;
 
 import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.ObjectScanner.ScanReason;
@@ -75,23 +73,20 @@ import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.graal.pointsto.meta.ObjectReachableCallback;
 import com.oracle.graal.pointsto.util.AnalysisError;
-import com.oracle.svm.common.meta.MultiMethod;
+import com.oracle.svm.common.meta.MethodVariant;
 import com.oracle.svm.core.LinkerInvocation;
 import com.oracle.svm.core.annotate.Delete;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.code.SubstrateBackend;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
-import com.oracle.svm.core.hub.ClassForNameSupport;
 import com.oracle.svm.core.meta.SharedField;
 import com.oracle.svm.core.meta.SharedMethod;
 import com.oracle.svm.core.meta.SharedType;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.ameta.FieldValueInterceptionSupport;
 import com.oracle.svm.hosted.analysis.Inflation;
 import com.oracle.svm.hosted.bootstrap.BootstrapMethodConfiguration;
 import com.oracle.svm.hosted.c.NativeLibraries;
-import com.oracle.svm.hosted.code.CEntryPointData;
 import com.oracle.svm.hosted.code.CompileQueue.CompileTask;
 import com.oracle.svm.hosted.image.AbstractImage;
 import com.oracle.svm.hosted.image.AbstractImage.NativeImageKind;
@@ -103,10 +98,13 @@ import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 import com.oracle.svm.hosted.option.HostedOptionProvider;
+import com.oracle.svm.hosted.reflect.ReflectionDataBuilder;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.AnnotationUtil;
 import com.oracle.svm.util.JVMCIFieldValueTransformer;
 import com.oracle.svm.util.OriginalFieldProvider;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.util.dynamicaccess.JVMCIRuntimeReflection;
 
 import jdk.graal.compiler.debug.Assertions;
 import jdk.graal.compiler.debug.DebugContext;
@@ -138,22 +136,6 @@ public class FeatureImpl {
         @Override
         public Class<?> findClassByName(String className) {
             return imageClassLoader.findClass(className).get();
-        }
-
-        public <T> List<Class<? extends T>> findSubclasses(Class<T> baseClass) {
-            return imageClassLoader.findSubclasses(baseClass, false);
-        }
-
-        public List<Class<?>> findAnnotatedClasses(Class<? extends Annotation> annotationClass) {
-            return imageClassLoader.findAnnotatedClasses(annotationClass, false);
-        }
-
-        public List<Method> findAnnotatedMethods(Class<? extends Annotation> annotationClass) {
-            return imageClassLoader.findAnnotatedMethods(annotationClass);
-        }
-
-        public List<Field> findAnnotatedFields(Class<? extends Annotation> annotationClass) {
-            return imageClassLoader.findAnnotatedFields(annotationClass);
         }
 
         public FeatureHandler getFeatureHandler() {
@@ -205,9 +187,10 @@ public class FeatureImpl {
 
     public static class AfterRegistrationAccessImpl extends FeatureAccessImpl implements Feature.AfterRegistrationAccess {
         private final MetaAccessProvider metaAccess;
-        private Pair<Method, CEntryPointData> mainEntryPoint;
+        private MainEntryPoint mainEntryPoint;
 
-        public AfterRegistrationAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, MetaAccessProvider metaAccess, Pair<Method, CEntryPointData> mainEntryPoint,
+        public AfterRegistrationAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, MetaAccessProvider metaAccess,
+                        MainEntryPoint mainEntryPoint,
                         DebugContext debugContext) {
             super(featureHandler, imageClassLoader, debugContext);
             this.metaAccess = metaAccess;
@@ -219,11 +202,11 @@ public class FeatureImpl {
             return metaAccess;
         }
 
-        public void setMainEntryPoint(Pair<Method, CEntryPointData> mainEntryPoint) {
+        public void setMainEntryPoint(MainEntryPoint mainEntryPoint) {
             this.mainEntryPoint = mainEntryPoint;
         }
 
-        public Pair<Method, CEntryPointData> getMainEntryPoint() {
+        public MainEntryPoint getMainEntryPoint() {
             return mainEntryPoint;
         }
 
@@ -294,7 +277,7 @@ public class FeatureImpl {
         }
 
         public List<AnalysisType> findSubtypes(AnalysisType baseClass) {
-            return imageClassLoader.findSubclasses(baseClass.getJavaClass(), false).stream().map(getMetaAccess()::lookupJavaType).toList();
+            return imageClassLoader.guestTypes.findSubtypes(baseClass, false).stream().map(t -> getMetaAccess().getUniverse().lookup(t)).toList();
         }
 
         public boolean isReachable(Class<?> clazz) {
@@ -353,6 +336,12 @@ public class FeatureImpl {
             getUniverse().getHeapScanner().rescanRoot(field, reason);
         }
 
+        public void rescanRoot(ResolvedJavaField field, ScanReason reason) {
+            VMError.guarantee(!(field instanceof OriginalFieldProvider),
+                            "The ResolvedJavaField %s must be the original (Host VM) field. You can use OriginalFieldProvider.getOriginalField() to retrieve that", field);
+            getUniverse().getHeapScanner().rescanRoot(field, reason);
+        }
+
         public Field findField(String declaringClassName, String fieldName) {
             return findField(imageClassLoader.findClassOrFail(declaringClassName), fieldName);
         }
@@ -363,7 +352,7 @@ public class FeatureImpl {
 
         public void ensureInitialized(String className) {
             try {
-                imageClassLoader.typeForName(className).initialize();
+                imageClassLoader.guestTypes.typeForName(className).initialize();
             } catch (ClassNotFoundException e) {
                 throw VMError.shouldNotReachHere(e);
             }
@@ -475,14 +464,14 @@ public class FeatureImpl {
     public static class BeforeAnalysisAccessImpl extends AnalysisAccessBase implements Feature.BeforeAnalysisAccess {
 
         private final NativeLibraries nativeLibraries;
-        private final ClassForNameSupport classForNameSupport;
+        private final ReflectionDataBuilder reflectionData;
         private final Map<Consumer<DuringAnalysisAccess>, ElementNotification> reachabilityNotifications = new ConcurrentHashMap<>();
 
         public BeforeAnalysisAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, Inflation bb, NativeLibraries nativeLibraries,
                         DebugContext debugContext) {
             super(featureHandler, imageClassLoader, bb, debugContext);
             this.nativeLibraries = nativeLibraries;
-            this.classForNameSupport = ClassForNameSupport.currentLayer();
+            this.reflectionData = (ReflectionDataBuilder) ImageSingletons.lookup(RuntimeReflectionSupport.class);
         }
 
         public NativeLibraries getNativeLibraries() {
@@ -524,8 +513,7 @@ public class FeatureImpl {
             if (aType.isAbstract()) {
                 throw UserError.abort("Cannot register an abstract class as instantiated: " + aType.toJavaName(true));
             }
-            aType.registerAsUnsafeAllocated("From feature");
-            classForNameSupport.registerUnsafeAllocated(AccessCondition.unconditional(), aType.getJavaClass(), preserved);
+            reflectionData.registerUnsafeAllocation(AccessCondition.unconditional(), preserved, aType);
         }
 
         @Override
@@ -550,6 +538,11 @@ public class FeatureImpl {
             registerAsUnsafeAccessed(getMetaAccess().lookupJavaField(field), "registered from Feature API");
         }
 
+        public void registerAsUnsafeAccessed(ResolvedJavaField field) {
+            AnalysisField aField = field instanceof AnalysisField af ? af : getUniverse().lookup(field);
+            registerAsUnsafeAccessed(aField, "registered from Feature API");
+        }
+
         public void registerAsUnsafeAccessed(Field field, Object reason) {
             registerAsUnsafeAccessed(getMetaAccess().lookupJavaField(field), reason);
         }
@@ -559,15 +552,15 @@ public class FeatureImpl {
             return aField.registerAsUnsafeAccessed(reason);
         }
 
-        public void registerAsRoot(Executable method, boolean invokeSpecial, String reason, MultiMethod.MultiMethodKey... otherRoots) {
+        public void registerAsRoot(Executable method, boolean invokeSpecial, String reason, MethodVariant.MethodVariantKey... otherRoots) {
             bb.addRootMethod(method, invokeSpecial, reason, otherRoots);
         }
 
-        public void registerAsRoot(AnalysisMethod aMethod, boolean invokeSpecial, String reason, MultiMethod.MultiMethodKey... otherRoots) {
+        public void registerAsRoot(AnalysisMethod aMethod, boolean invokeSpecial, String reason, MethodVariant.MethodVariantKey... otherRoots) {
             bb.addRootMethod(aMethod, invokeSpecial, reason, otherRoots);
         }
 
-        public void registerAsRoot(AnalysisMethod aMethod, boolean invokeSpecial, ScanReason reason, MultiMethod.MultiMethodKey... otherRoots) {
+        public void registerAsRoot(AnalysisMethod aMethod, boolean invokeSpecial, ScanReason reason, MethodVariant.MethodVariantKey... otherRoots) {
             bb.addRootMethod(aMethod, invokeSpecial, reason, otherRoots);
         }
 
@@ -579,8 +572,9 @@ public class FeatureImpl {
             return bb.getHostVM();
         }
 
-        public void registerHierarchyForReflectiveInstantiation(Class<?> c) {
-            findSubclasses(c).stream().filter(clazz -> !Modifier.isAbstract(clazz.getModifiers())).forEach(clazz -> RuntimeReflection.registerForReflectiveInstantiation(clazz));
+        public void registerHierarchyForReflectiveInstantiation(Class<?> c, GuestTypes guestTypes) {
+            ResolvedJavaType type = guestTypes.getGuestAccess().lookupType(c);
+            guestTypes.findSubtypes(type, false).stream().filter(t -> !t.isAbstract()).forEach(JVMCIRuntimeReflection::registerForReflectiveInstantiation);
         }
 
         @Override
@@ -687,7 +681,7 @@ public class FeatureImpl {
          */
         public void registerOpaqueMethodReturn(Method method) {
             AnalysisMethod aMethod = bb.getMetaAccess().lookupJavaMethod(method);
-            VMError.guarantee(aMethod.getAllMultiMethods().size() == 1, "Opaque method return called for method with >1 multimethods: %s ", method);
+            VMError.guarantee(aMethod.getAllMethodVariants().size() == 1, "Opaque method return called for method with >1 method variants: %s ", method);
             aMethod.setOpaqueReturn();
         }
 
@@ -707,7 +701,11 @@ public class FeatureImpl {
          * @see SVMHost#allowStableFieldFoldingBeforeAnalysis
          */
         public void allowStableFieldFoldingBeforeAnalysis(Field field) {
-            getHostVM().allowStableFieldFoldingBeforeAnalysis(getMetaAccess().lookupJavaField(field));
+            allowStableFieldFoldingBeforeAnalysis(getMetaAccess().lookupJavaField(field));
+        }
+
+        public void allowStableFieldFoldingBeforeAnalysis(ResolvedJavaField field) {
+            getHostVM().allowStableFieldFoldingBeforeAnalysis(field instanceof AnalysisField analysisField ? analysisField : getUniverse().lookup(field));
         }
     }
 

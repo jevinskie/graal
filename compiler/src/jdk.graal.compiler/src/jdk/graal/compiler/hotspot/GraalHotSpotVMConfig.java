@@ -205,6 +205,7 @@ public class GraalHotSpotVMConfig extends GraalHotSpotVMConfigAccess {
     // Compressed Oops related values.
     public final boolean useCompressedOops = getFlag("UseCompressedOops", Boolean.class);
     public final boolean useCompressedClassPointers = getFlag("UseCompressedClassPointers", Boolean.class);
+
     // JDK-8305895 allows storing the compressed class pointer in the upper 22 bits of the mark
     // word. This runtime optimization is guarded by the flag UseCompactObjectHeaders. It depends
     // on compressed class pointers, meaning that if useCompactObjectHeaders is true,
@@ -478,9 +479,6 @@ public class GraalHotSpotVMConfig extends GraalHotSpotVMConfigAccess {
     public final long sha256ImplCompressMultiBlock = getFieldValue("StubRoutines::_sha256_implCompressMB", Long.class, "address");
     public final long sha512ImplCompressMultiBlock = getFieldValue("StubRoutines::_sha512_implCompressMB", Long.class, "address");
     public final long sha3ImplCompressMultiBlock = getFieldValue("StubRoutines::_sha3_implCompressMB", Long.class, "address");
-
-    public final long base64EncodeBlock = getFieldValue("StubRoutines::_base64_encodeBlock", Long.class, "address");
-    public final long base64DecodeBlock = getFieldValue("StubRoutines::_base64_decodeBlock", Long.class, "address");
 
     public final long updateBytesCRC32C = getFieldValue("StubRoutines::_updateBytesCRC32C", Long.class, "address");
     public final long updateBytesAdler32 = getFieldValue("StubRoutines::_updateBytesAdler32", Long.class, "address");

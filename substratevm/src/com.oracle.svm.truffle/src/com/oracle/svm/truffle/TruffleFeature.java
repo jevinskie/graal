@@ -25,6 +25,7 @@
 
 package com.oracle.svm.truffle;
 
+import static com.oracle.svm.core.UninterruptibleAnnotationUtils.UninterruptibleGuestValue;
 import static com.oracle.svm.graal.hosted.runtimecompilation.RuntimeCompilationFeature.AllowInliningPredicate.InlineDecision.INLINE;
 import static com.oracle.svm.graal.hosted.runtimecompilation.RuntimeCompilationFeature.AllowInliningPredicate.InlineDecision.INLINING_DISALLOWED;
 import static com.oracle.svm.graal.hosted.runtimecompilation.RuntimeCompilationFeature.AllowInliningPredicate.InlineDecision.NO_DECISION;
@@ -110,7 +111,7 @@ import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.HostedProviders;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.UninterruptibleAnnotationUtils;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.TargetClass;
@@ -121,12 +122,9 @@ import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
 import com.oracle.svm.core.graal.snippets.NodeLoweringProvider;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.jdk.VectorAPIEnabled;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.option.HostedOptionKey;
 import com.oracle.svm.core.stack.JavaStackWalker;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.graal.RuntimeCompilationSupport;
 import com.oracle.svm.graal.hosted.runtimecompilation.CallTreeInfo;
 import com.oracle.svm.graal.hosted.runtimecompilation.RuntimeCompilationCandidate;
@@ -139,6 +137,12 @@ import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.substitute.DeletedElementException;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.StringUtil;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.truffle.api.SubstrateKnownTruffleTypes;
 import com.oracle.svm.truffle.api.SubstrateThreadLocalHandshake;
 import com.oracle.svm.truffle.api.SubstrateThreadLocalHandshakeSnippets;
@@ -146,9 +150,6 @@ import com.oracle.svm.truffle.api.SubstrateTruffleCompiler;
 import com.oracle.svm.truffle.api.SubstrateTruffleRuntime;
 import com.oracle.svm.truffle.api.SubstrateTruffleUniverseFactory;
 import com.oracle.svm.util.AnnotationUtil;
-import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ReflectionUtil;
-import com.oracle.svm.util.StringUtil;
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
@@ -182,6 +183,7 @@ import jdk.graal.compiler.truffle.KnownTruffleTypes;
 import jdk.graal.compiler.truffle.PartialEvaluator;
 import jdk.graal.compiler.truffle.host.HostInliningPhase;
 import jdk.graal.compiler.truffle.host.TruffleHostEnvironment;
+import jdk.graal.compiler.truffle.nodes.TruffleEarlyEscapeAnchorNode;
 import jdk.graal.compiler.truffle.nodes.asserts.NeverPartOfCompilationNode;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaField;
@@ -387,6 +389,9 @@ public class TruffleFeature implements InternalFeature {
         config.registerAsRoot((AnalysisMethod) SubstrateThreadLocalHandshake.FOREIGN_POLL.findMethod(config.getMetaAccess()), true,
                         "Truffle thread local foreign poll, registered in " + TruffleFeature.class);
 
+        // required for TrufflEarlyEscapeAnalysisPhase which is run after analysis
+        config.registerAsUnsafeAllocated(TruffleEarlyEscapeAnchorNode.class);
+
         RuntimeCompilationFeature runtimeCompilationFeature = RuntimeCompilationFeature.singleton();
         SubstrateTruffleCompiler truffleCompiler = truffleRuntime.preinitializeTruffleCompiler();
         truffleRuntime.initializeKnownMethods(config.getMetaAccess());
@@ -558,8 +563,8 @@ public class TruffleFeature implements InternalFeature {
     private static boolean runtimeCompilationForbidden(ResolvedJavaMethod method) {
         if (AnnotationUtil.getAnnotation(method, TruffleBoundary.class) != null) {
             return true;
-        } else if (Uninterruptible.Utils.isUninterruptible(method)) {
-            Uninterruptible uninterruptibleAnnotation = Uninterruptible.Utils.getAnnotation(method);
+        } else if (UninterruptibleAnnotationUtils.isUninterruptible(method)) {
+            UninterruptibleGuestValue uninterruptibleAnnotation = UninterruptibleAnnotationUtils.getAnnotation(method);
             if (uninterruptibleAnnotation == null || !uninterruptibleAnnotation.mayBeInlined()) {
                 /* The semantics of Uninterruptible would get lost during partial evaluation. */
                 return true;
@@ -1088,7 +1093,7 @@ public class TruffleFeature implements InternalFeature {
          * Please keep this code in sync with the HotSpot configuration in
          * TruffleCommunityCompilerConfiguration.
          */
-        if (hosted && HostInliningPhase.Options.TruffleHostInlining.getValue(HostedOptionValues.singleton()) && suites.getHighTier() instanceof HighTier) {
+        if (hosted && HostInliningPhase.Options.TruffleHostInlining.getValue(HostedOptionValues.singleton().get()) && suites.getHighTier() instanceof HighTier) {
             SubstrateHostInliningPhase hostInliningPhase = new SubstrateHostInliningPhase(CanonicalizerPhase.create());
             var position = suites.getHighTier().findPhase(SubstrateOutlineBytecodeHandlerPhase.class);
             if (position != null) {

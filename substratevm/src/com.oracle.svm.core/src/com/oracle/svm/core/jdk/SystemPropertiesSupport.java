@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.jdk;
 
-import static jdk.graal.compiler.core.common.LibGraalSupport.LIBGRAAL_SETTING_PROPERTY_PREFIX;
+import static jdk.graal.compiler.options.LibGraalSupport.LIBGRAAL_SETTING_PROPERTY_PREFIX;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -53,9 +53,10 @@ import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.libjvm.LibJVMMainMethodWrappers;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
+import jdk.graal.compiler.options.LibGraalSupport;
 
 /**
  * This class maintains the system properties at run time.
@@ -121,7 +122,7 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
 
     @Platforms(Platform.HOSTED_ONLY.class)
     @SuppressWarnings("this-escape")
-    protected SystemPropertiesSupport() {
+    protected SystemPropertiesSupport(boolean compatibilityMode) {
         for (String key : HOSTED_PROPERTIES) {
             String value = System.getProperty(key);
             if (value != null) {
@@ -142,18 +143,9 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
         initializeProperty("java.vm.version", vm.version);
 
         initializeProperty("java.class.path", "");
-        initializeProperty("java.endorsed.dirs", "");
-        initializeProperty("java.ext.dirs", "");
-        initializeProperty("sun.arch.data.model", Integer.toString(ConfigurationValues.getTarget().wordJavaKind.getBitCount()));
+        initializeProperty("jdk.module.path", "");
 
-        initializeProperty(ImageInfo.PROPERTY_IMAGE_CODE_KEY, ImageInfo.PROPERTY_IMAGE_CODE_VALUE_RUNTIME);
-
-        for (String futureDefault : FutureDefaultsOptions.getFutureDefaults()) {
-            initializeProperty(FutureDefaultsOptions.SYSTEM_PROPERTY_PREFIX + futureDefault, Boolean.TRUE.toString());
-        }
-        for (String futureDefault : FutureDefaultsOptions.getRetiredFutureDefaults()) {
-            initializeProperty(FutureDefaultsOptions.SYSTEM_PROPERTY_PREFIX + futureDefault, Boolean.TRUE.toString());
-        }
+        initializeProperty("sun.arch.data.model", Integer.toString(ConfigurationValues.getWordKind().getBitCount()));
 
         ArrayList<LazySystemProperty> lazyProperties = new ArrayList<>();
         lazyProperties.add(new LazySystemProperty(UserSystemProperty.NAME, this::userNameValue));
@@ -176,10 +168,8 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
         lazyProperties.add(new LazySystemProperty(UserSystemProperty.VARIANT_DISPLAY, () -> LocaleSupport.singleton().getLocale().displayVariant()));
         lazyProperties.add(new LazySystemProperty(UserSystemProperty.VARIANT_FORMAT, () -> LocaleSupport.singleton().getLocale().formatVariant()));
 
-        if (ImageLayerBuildingSupport.buildingImageLayer()) {
-            lazyProperties.add(new LazySystemProperty(ImageInfo.PROPERTY_IMAGE_KIND_KEY, () -> ImageKindInfoSingleton.singleton().getImageKindInfoProperty()));
-        } else {
-            initializeProperty(ImageInfo.PROPERTY_IMAGE_KIND_KEY, System.getProperty(ImageInfo.PROPERTY_IMAGE_KIND_KEY));
+        if (!compatibilityMode) {
+            initializeNonStandardProperties(lazyProperties);
         }
 
         String targetName = System.getProperty("svm.targetName");
@@ -205,6 +195,23 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
             assert !currentProperties.containsKey(property.getKey());
 
             lazySystemProperties.put(property.getKey(), property);
+        }
+    }
+
+    private void initializeNonStandardProperties(ArrayList<LazySystemProperty> lazyProperties) {
+        initializeProperty(ImageInfo.PROPERTY_IMAGE_CODE_KEY, ImageInfo.PROPERTY_IMAGE_CODE_VALUE_RUNTIME);
+
+        for (String futureDefault : FutureDefaultsOptions.getFutureDefaults()) {
+            initializeProperty(FutureDefaultsOptions.SYSTEM_PROPERTY_PREFIX + futureDefault, Boolean.TRUE.toString());
+        }
+        for (String futureDefault : FutureDefaultsOptions.getRetiredFutureDefaults()) {
+            initializeProperty(FutureDefaultsOptions.SYSTEM_PROPERTY_PREFIX + futureDefault, Boolean.TRUE.toString());
+        }
+
+        if (ImageLayerBuildingSupport.buildingImageLayer()) {
+            lazyProperties.add(new LazySystemProperty(ImageInfo.PROPERTY_IMAGE_KIND_KEY, () -> ImageKindInfoSingleton.singleton().getImageKindInfoProperty()));
+        } else {
+            initializeProperty(ImageInfo.PROPERTY_IMAGE_KIND_KEY, System.getProperty(ImageInfo.PROPERTY_IMAGE_KIND_KEY));
         }
     }
 
@@ -318,7 +325,7 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
      * If the current image being built is libgraal, sets a runtime system property used to describe
      * some aspect of the libgraal image configuration.
      *
-     * @see jdk.graal.compiler.core.common.LibGraalSupport#LIBGRAAL_SETTING_PROPERTY_PREFIX
+     * @see LibGraalSupport#LIBGRAAL_SETTING_PROPERTY_PREFIX
      */
     public void setLibGraalRuntimeProperty(String name, String value) {
         if (!SubstrateOptions.LibGraalClassLoader.getValue().isEmpty()) {

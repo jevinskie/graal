@@ -37,7 +37,7 @@ import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.meta.SharedType;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.OriginalClassProvider;
 
 import jdk.graal.compiler.debug.Assertions;
@@ -226,6 +226,18 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
 
     public HostedMethod[] getInterpreterDispatchTable() {
         return RuntimeClassLoading.isSupported() ? getCremaOpenTypeWorldDispatchTables() : getVTable();
+    }
+
+    public int getInterpreterClassVTableLength() {
+        if (itableStartingOffsets != null && itableStartingOffsets.length > 0) {
+            return itableStartingOffsets[0];
+        }
+        /*
+         * i-table offsets are only initialized for open-world dispatch tables. Otherwise the
+         * interpreter dispatch table is just the class vtable, so its full length is correct.
+         */
+        assert SubstrateOptions.useClosedTypeWorldHubLayout() || itableStartingOffsets != null : this;
+        return getInterpreterDispatchTable().length;
     }
 
     @Override

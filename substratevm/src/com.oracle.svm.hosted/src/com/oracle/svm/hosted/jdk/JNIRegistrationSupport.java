@@ -212,7 +212,7 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
 
     @Override
     public void beforeImageWrite(BeforeImageWriteAccess access) {
-        if (SubstrateOptions.StaticExecutable.getValue() || isDarwin()) {
+        if (SubstrateOptions.StaticExecutable.getValue()) {
             return; /* Not supported. */
         }
 
@@ -221,12 +221,17 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
             addJvmShimExports("JNI_CreateJavaVM", "JNI_GetCreatedJavaVMs", "JNI_GetDefaultJavaVMInitArgs");
         }
 
-        ((BeforeImageWriteAccessImpl) access).registerLinkerInvocationTransformer(linkerInvocation -> {
-            /* Make sure the native image contains all symbols necessary for shim libraries. */
-            getShimExports().map(isWindows() ? "/export:"::concat : "-Wl,-u,"::concat)
-                            .forEach(linkerInvocation::addNativeLinkerOption);
-            return linkerInvocation;
-        });
+        if (!isDarwin()) {
+            ((BeforeImageWriteAccessImpl) access).registerLinkerInvocationTransformer(linkerInvocation -> {
+                /* Make sure the native image contains all symbols necessary for shim libraries. */
+                getShimExports().map(isWindows() ? "/export:"::concat : "-Wl,-u,"::concat)
+                                .forEach(linkerInvocation::addNativeLinkerOption);
+                if (Boolean.getBoolean("debug.jni.shims")) {
+                    System.out.println("beforeImageWrite registerLinkerInvocationTransformer linker command: " + String.join(" ", linkerInvocation.getCommand()));
+                }
+                return linkerInvocation;
+            });
+        }
 
         imageName = ((BeforeImageWriteAccessImpl) access).getImageName();
     }
@@ -241,11 +246,19 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
 
     @Override
     public void afterImageWrite(AfterImageWriteAccess access) {
-        if (SubstrateOptions.StaticExecutable.getValue() || isDarwin()) {
+        if (SubstrateOptions.StaticExecutable.getValue()) {
             return; /* Not supported. */
         }
 
         accessImpl = (AfterImageWriteAccessImpl) access;
+
+        if (Boolean.getBoolean("debug.jni.shims")) {
+            System.out.println("afterImageWrite accessImpl.getImagePath: " + accessImpl.getImagePath() + " tmp dir: " + accessImpl.getTempDirectory() + " symbols global: " + String.join(", ", accessImpl.getImageSymbols(true))); // + " symbols all: " + String.join(", ", accessImpl.getImageSymbols(false)));
+        }
+
+        Path imagePath = accessImpl.getImagePath();
+        String imageFile = imagePath.getFileName().toString();
+
         try (Scope _ = accessImpl.getDebugContext().scope("JDKLibs")) {
             Path jdkLibDir = JDKLibDirectoryProvider.singleton().getJDKLibDirectory();
             /* Copy JDK libraries needed to run the native image. */
@@ -254,7 +267,7 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
              * JDK libraries can depend on `libjvm` and `libjava`, so to satisfy their dependencies
              * we use shim libraries to re-export the actual functions from the native image itself.
              */
-            makeShimLibraries();
+            makeShimLibraries(imageFile);
         } finally {
             accessImpl = null;
         }
@@ -305,21 +318,28 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
     }
 
     /** Makes shim libraries that are necessary to satisfy dependencies of JDK libraries. */
-    private void makeShimLibraries() {
+    private void makeShimLibraries(String imageFile) {
         for (String shimName : shimExports.keySet()) {
+            if (Boolean.getBoolean("debug.jni.shims")) {
+                System.out.println("makeShimLibraries imageFile: " + imageFile + " shim lib: '" + shimName + "'");
+            }
             DebugContext debug = accessImpl.getDebugContext();
             try (Scope _ = debug.scope(shimName + "Shim")) {
                 if (debug.isLogEnabled(DebugContext.INFO_LEVEL)) {
                     debug.log("exports: %s", String.join(", ", shimExports.get(shimName)));
                 }
-                makeShimLibrary(shimName);
+                makeShimLibrary(shimName, imageFile);
             }
         }
     }
 
     /** Makes a shim library that re-exports functions from the native image. */
-    private void makeShimLibrary(String shimName) {
+    private void makeShimLibrary(String shimName, String imageFile) {
         assert ImageSingletons.contains(CCompilerInvoker.class);
+
+        if (Boolean.getBoolean("debug.jni.shims")) {
+            System.out.println("makeShimLibrary shimName: " + shimName + " imageFile: " + imageFile);
+        }
 
         List<String> linkerCommand;
         Path image = accessImpl.getImagePath();
@@ -344,16 +364,56 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
                 linkerCommand.add("/export:" + export);
             }
         } else {
-            /*
-             * To satisfy the dynamic loader and enable re-export it is enough to have a library
-             * with the expected name. So we just create an empty one ...
-             */
-            linkerCommand = ImageSingletons.lookup(CCompilerInvoker.class)
-                            .createCompilerCommand(List.of("-shared", "-x", "c", "-nostdlib"), shimLibrary, Path.of("/dev/null"));
-            /* ... and add an explicit dependency on the native image if it is a shared library. */
-            if (!accessImpl.getImageKind().isExecutable) {
-                linkerCommand.addAll(List.of("-Wl,-no-as-needed", "-L" + image.getParent(), "-l:" + image.getFileName(),
-                                "-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN"));
+            if (!isDarwin()) {
+                /*
+                * To satisfy the dynamic loader and enable re-export it is enough to have a library
+                * with the expected name. So we just create an empty one ...
+                */
+                linkerCommand = ImageSingletons.lookup(CCompilerInvoker.class)
+                                .createCompilerCommand(List.of("-shared", "-x", "c", "-nostdlib"), shimLibrary, Path.of("/dev/null"));
+                /* ... and add an explicit dependency on the native image if it is a shared library. */
+                if (!accessImpl.getImageKind().isExecutable) {
+                    linkerCommand.addAll(List.of("-Wl,-no-as-needed", "-L" + image.getParent(), "-l:" + image.getFileName(),
+                                    "-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN"));
+                }
+            } else {
+                Path mainImageTBDPath = accessImpl.getTempDirectory().resolve("graal_main_image.tbd");
+                List<String> tbdContents = List.of(
+                    "--- !tapi-tbd",
+                    "tbd-version: 4",
+                    "targets: [i386-macos, x86_64-macos, x86_64-maccatalyst, arm64-macos, arm64-maccatalyst, arm64e-macos, arm64e-maccatalyst]",
+                    "install-name: '" + imageFile + "'",
+                    "...",
+                    ""
+                );
+                try {
+                    Files.write(mainImageTBDPath, tbdContents);
+                } catch (IOException e) {
+                    VMError.shouldNotReachHere(e);
+                }
+                if (Boolean.getBoolean("debug.jni.shims")) {
+                    System.out.println("makeShimLibrary mainImageTBDPath: " + mainImageTBDPath);
+                    System.out.println("makeShimLibrary tbdContents:\n" + String.join("\n", tbdContents));
+                }
+                Path emptyCPath = accessImpl.getTempDirectory().resolve("empty_c_dummy.c");
+                try {
+                    Files.write(emptyCPath, List.of(""));
+                } catch (IOException e) {
+                    VMError.shouldNotReachHere(e);
+                }
+
+                linkerCommand = ImageSingletons.lookup(CCompilerInvoker.class)
+                                .createCompilerCommand(List.of("-shared", "-reexport_library", mainImageTBDPath.toString()), shimLibrary, emptyCPath);
+                if (!accessImpl.getImageKind().isExecutable) {
+                    // linkerCommand.addAll(List.of("-Wl,-no-as-needed", "-L" + image.getParent(), "-l:" + image.getFileName(),
+                    //                 "-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN"));
+                }
+            }
+            if (Boolean.getBoolean("debug.jni.shims")) {
+                for (String export : shimExports.get(shimName)) {
+                    System.out.println("makeShimLibrary shim lib: " + shimName + " export: " + export);
+                }
+                System.out.println("makeShimLibrary linker command: " + String.join(" ", linkerCommand));
             }
         }
 
@@ -362,6 +422,8 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
                         Activation _ = debug.activate()) {
             int cmdResult = FileUtils.executeCommand(linkerCommand);
             if (cmdResult != 0) {
+                System.out.println("failed linker command: " + String.join(" ", linkerCommand));
+                debug.log("failed linker command: %s", String.join(" ", linkerCommand));
                 VMError.shouldNotReachHereUnexpectedInput(cmdResult); // ExcludeFromJacocoGeneratedReport
             }
             BuildArtifacts.singleton().add(ArtifactType.JDK_LIBRARY_SHIM, shimLibrary);
